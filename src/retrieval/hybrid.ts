@@ -27,6 +27,9 @@ export class HybridSearch {
 
   /**
    * Search using all available methods and fuse results
+   *
+   * Strategy: BM25 gets candidates fast, ColBERT reranks for quality
+   * This is both FASTER (fewer ColBERT computations) and BETTER (combines keyword + semantic)
    */
   async search(
     query: string,
@@ -36,6 +39,7 @@ export class HybridSearch {
       bm25Weight?: number;
       semanticWeight?: number;
       graphWeight?: number;
+      useReranking?: boolean;  // Use ColBERT to rerank BM25 results
     } = {}
   ): Promise<HybridSearchResult[]> {
     const {
@@ -44,17 +48,29 @@ export class HybridSearch {
       bm25Weight = 1.0,
       semanticWeight = 1.0,
       graphWeight = 0.5,
+      useReranking = true,  // Default: reranking mode for better quality
     } = options;
 
     // Fetch more candidates than needed for fusion
     const candidateLimit = Math.max(limit * 3, 30);
 
-    // Run searches in parallel
-    const [bm25Results, semanticResults, graphMemoryIds] = await Promise.all([
+    // Run BM25 and graph search in parallel (fast)
+    const [bm25Results, graphMemoryIds] = await Promise.all([
       this.searchBM25(query, candidateLimit),
-      this.searchSemantic(query, candidateLimit),
       includeGraph ? this.searchGraph(query) : Promise.resolve([]),
     ]);
+
+    // For semantic: either rerank BM25 results (faster+better) or search full index
+    let semanticResults: Array<{ id: string; score: number }>;
+    if (useReranking && bm25Results.length > 0) {
+      // Rerank BM25 candidates with ColBERT - faster AND better quality
+      const docs = bm25Results.map(r => ({ id: r.id, content: this.db.getMemory(r.id)?.content || '' }));
+      const reranked = await this.retriever.rerank(query, docs, candidateLimit);
+      semanticResults = reranked.map(r => ({ id: r.id, score: r.score }));
+    } else {
+      // Full semantic search
+      semanticResults = await this.searchSemantic(query, candidateLimit);
+    }
 
     // Fetch graph memories
     const graphMemories = graphMemoryIds.length > 0

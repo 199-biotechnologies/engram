@@ -58,7 +58,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.1.0",
+    version: "0.2.0",
   },
   {
     capabilities: {
@@ -67,7 +67,7 @@ const server = new Server(
   }
 );
 
-// Tool definitions
+// Tool definitions with MCP 2025-06-18 annotations
 const TOOLS = [
   {
     name: "remember",
@@ -95,6 +95,13 @@ const TOOLS = [
       },
       required: ["content"],
     },
+    annotations: {
+      title: "Store Memory",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
   },
   {
     name: "recall",
@@ -120,6 +127,13 @@ const TOOLS = [
       },
       required: ["query"],
     },
+    annotations: {
+      title: "Search Memories",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "forget",
@@ -133,6 +147,13 @@ const TOOLS = [
         },
       },
       required: ["id"],
+    },
+    annotations: {
+      title: "Delete Memory",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
   {
@@ -152,6 +173,13 @@ const TOOLS = [
         },
       },
       required: ["name", "type"],
+    },
+    annotations: {
+      title: "Create Entity",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
   {
@@ -176,6 +204,13 @@ const TOOLS = [
       },
       required: ["entity", "observation"],
     },
+    annotations: {
+      title: "Add Observation",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
   },
   {
     name: "relate",
@@ -198,6 +233,13 @@ const TOOLS = [
       },
       required: ["from", "to", "relation"],
     },
+    annotations: {
+      title: "Create Relationship",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "query_entity",
@@ -211,6 +253,13 @@ const TOOLS = [
         },
       },
       required: ["entity"],
+    },
+    annotations: {
+      title: "Query Entity",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
   {
@@ -231,6 +280,13 @@ const TOOLS = [
         },
       },
     },
+    annotations: {
+      title: "List Entities",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "stats",
@@ -238,6 +294,13 @@ const TOOLS = [
     inputSchema: {
       type: "object" as const,
       properties: {},
+    },
+    annotations: {
+      title: "Get Statistics",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
 ];

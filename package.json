@@ -1,6 +1,6 @@
 {
   "name": "@199-bio/engram",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Give Claude a perfect memory. Local-first MCP server with hybrid search.",
   "type": "module",
   "main": "dist/index.js",
@@ -46,11 +46,11 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "better-sqlite3": "^11.0.0",
+    "@modelcontextprotocol/sdk": "^1.25.0",
+    "better-sqlite3": "^11.10.0",
     "chrono-node": "^2.7.0",
     "uuid": "^10.0.0",
-    "zod": "^3.23.0"
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

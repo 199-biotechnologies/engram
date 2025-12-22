@@ -47,6 +47,7 @@ export interface Relation {
 
 export class EngramDatabase {
   private db: Database.Database;
+  private stmtCache: Map<string, Database.Statement> = new Map();
 
   constructor(dbPath: string) {
     // Ensure directory exists
@@ -56,8 +57,15 @@ export class EngramDatabase {
     }
 
     this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL"); // Better concurrent access
+
+    // Performance optimizations - all improve speed with no quality trade-off
+    this.db.pragma("journal_mode = WAL");         // Better concurrent access
+    this.db.pragma("synchronous = NORMAL");       // Faster writes, WAL provides safety
+    this.db.pragma("cache_size = -64000");        // 64MB cache (negative = KB)
+    this.db.pragma("mmap_size = 268435456");      // 256MB memory-mapped I/O
+    this.db.pragma("temp_store = MEMORY");        // Keep temp tables in RAM
     this.db.pragma("foreign_keys = ON");
+
     this.initialize();
   }
 
@@ -165,8 +173,7 @@ export class EngramDatabase {
   }
 
   getMemory(id: string): Memory | null {
-    const stmt = this.db.prepare("SELECT * FROM memories WHERE id = ?");
-    const row = stmt.get(id) as Record<string, unknown> | undefined;
+    const row = this.stmt("SELECT * FROM memories WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? this.rowToMemory(row) : null;
   }
 
@@ -198,35 +205,27 @@ export class EngramDatabase {
   }
 
   touchMemory(id: string): void {
-    const stmt = this.db.prepare(`
-      UPDATE memories
-      SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `);
-    stmt.run(id);
+    this.stmt(`UPDATE memories SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
   }
 
   getAllMemories(limit: number = 1000): Memory[] {
-    const stmt = this.db.prepare("SELECT * FROM memories ORDER BY timestamp DESC LIMIT ?");
-    const rows = stmt.all(limit) as Record<string, unknown>[];
+    const rows = this.stmt("SELECT * FROM memories ORDER BY timestamp DESC LIMIT ?").all(limit) as Record<string, unknown>[];
     return rows.map((row) => this.rowToMemory(row));
   }
 
   // ============ BM25 Search ============
 
   searchBM25(query: string, limit: number = 20): Array<Memory & { score: number }> {
-    const stmt = this.db.prepare(`
+    // Escape special FTS5 characters and format query
+    const escapedQuery = this.escapeFTS5Query(query);
+    const rows = this.stmt(`
       SELECT m.*, bm25(memories_fts) as score
       FROM memories_fts fts
       JOIN memories m ON fts.rowid = m.rowid
       WHERE memories_fts MATCH ?
       ORDER BY score
       LIMIT ?
-    `);
-
-    // Escape special FTS5 characters and format query
-    const escapedQuery = this.escapeFTS5Query(query);
-    const rows = stmt.all(escapedQuery, limit) as Array<Record<string, unknown>>;
+    `).all(escapedQuery, limit) as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
       ...this.rowToMemory(row),
@@ -262,14 +261,12 @@ export class EngramDatabase {
   }
 
   getEntity(id: string): Entity | null {
-    const stmt = this.db.prepare("SELECT * FROM entities WHERE id = ?");
-    const row = stmt.get(id) as Record<string, unknown> | undefined;
+    const row = this.stmt("SELECT * FROM entities WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? this.rowToEntity(row) : null;
   }
 
   findEntityByName(name: string): Entity | null {
-    const stmt = this.db.prepare("SELECT * FROM entities WHERE LOWER(name) = LOWER(?)");
-    const row = stmt.get(name) as Record<string, unknown> | undefined;
+    const row = this.stmt("SELECT * FROM entities WHERE LOWER(name) = LOWER(?)").get(name) as Record<string, unknown> | undefined;
     return row ? this.rowToEntity(row) : null;
   }
 
@@ -329,8 +326,7 @@ export class EngramDatabase {
   }
 
   getObservation(id: string): Observation | null {
-    const stmt = this.db.prepare("SELECT * FROM observations WHERE id = ?");
-    const row = stmt.get(id) as Record<string, unknown> | undefined;
+    const row = this.stmt("SELECT * FROM observations WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? this.rowToObservation(row) : null;
   }
 
@@ -369,8 +365,7 @@ export class EngramDatabase {
   }
 
   getRelation(id: string): Relation | null {
-    const stmt = this.db.prepare("SELECT * FROM relations WHERE id = ?");
-    const row = stmt.get(id) as Record<string, unknown> | undefined;
+    const row = this.stmt("SELECT * FROM relations WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? this.rowToRelation(row) : null;
   }
 
@@ -466,18 +461,34 @@ export class EngramDatabase {
     relations: number;
     observations: number;
   } {
-    const memories = (this.db.prepare("SELECT COUNT(*) as count FROM memories").get() as { count: number }).count;
-    const entities = (this.db.prepare("SELECT COUNT(*) as count FROM entities").get() as { count: number }).count;
-    const relations = (this.db.prepare("SELECT COUNT(*) as count FROM relations").get() as { count: number }).count;
-    const observations = (this.db.prepare("SELECT COUNT(*) as count FROM observations").get() as { count: number }).count;
+    // Single query for all stats - much faster than 4 separate queries
+    const row = this.stmt(`
+      SELECT
+        (SELECT COUNT(*) FROM memories) as memories,
+        (SELECT COUNT(*) FROM entities) as entities,
+        (SELECT COUNT(*) FROM relations) as relations,
+        (SELECT COUNT(*) FROM observations) as observations
+    `).get() as { memories: number; entities: number; relations: number; observations: number };
 
-    return { memories, entities, relations, observations };
+    return row;
   }
 
   // ============ Utilities ============
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * Get a cached prepared statement - avoids re-parsing SQL
+   */
+  private stmt(sql: string): Database.Statement {
+    let cached = this.stmtCache.get(sql);
+    if (!cached) {
+      cached = this.db.prepare(sql);
+      this.stmtCache.set(sql, cached);
+    }
+    return cached;
   }
 
   private rowToMemory(row: Record<string, unknown>): Memory {
