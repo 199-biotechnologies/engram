@@ -60,7 +60,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.3.1",
+    version: "0.3.2",
   },
   {
     capabilities: {
@@ -155,91 +155,6 @@ const TOOLS = [
       title: "Delete Memory",
       readOnlyHint: false,
       destructiveHint: true,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "create_entity",
-    description: "ADVANCED: Manually create an entity. Rarely needed - remember auto-extracts entities. Only use when: (1) creating an entity that won't appear in any memory content, or (2) correcting entity type after auto-extraction.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        name: {
-          type: "string",
-          description: "Entity name (e.g., 'John Smith', 'Paris', 'Machine Learning')",
-        },
-        type: {
-          type: "string",
-          enum: ["person", "place", "concept", "event", "organization"],
-          description: "Type of entity",
-        },
-      },
-      required: ["name", "type"],
-    },
-    annotations: {
-      title: "Create Entity",
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "observe",
-    description: "ADVANCED: Add a fact to an EXISTING entity without creating a memory. Rarely needed - use remember instead, which stores the content AND links it to entities. Only use observe for adding metadata or corrections to entities.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        entity: {
-          type: "string",
-          description: "Entity name to add observation to (must already exist)",
-        },
-        observation: {
-          type: "string",
-          description: "The fact or observation to record",
-        },
-        confidence: {
-          type: "number",
-          description: "Confidence in this observation (0-1)",
-          default: 1.0,
-        },
-      },
-      required: ["entity", "observation"],
-    },
-    annotations: {
-      title: "Add Observation",
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "relate",
-    description: "ADVANCED: Manually create a relationship between two entities. Rarely needed - remember auto-extracts relationships from text. Only use when: (1) the relationship wasn't captured by auto-extraction, or (2) you need to add a relationship not mentioned in any memory.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        from: {
-          type: "string",
-          description: "Source entity name",
-        },
-        to: {
-          type: "string",
-          description: "Target entity name",
-        },
-        relation: {
-          type: "string",
-          description: "Type of relationship (e.g., 'sibling', 'works_at', 'knows', 'located_in')",
-        },
-      },
-      required: ["from", "to", "relation"],
-    },
-    annotations: {
-      title: "Create Relationship",
-      readOnlyHint: false,
-      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -435,90 +350,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text" as const,
               text: JSON.stringify({ success: true, deleted_id: id }),
-            },
-          ],
-        };
-      }
-
-      case "create_entity": {
-        const { name: entityName, type } = args as {
-          name: string;
-          type: "person" | "place" | "concept" | "event" | "organization";
-        };
-
-        const entity = graph.getOrCreateEntity(entityName, type);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                success: true,
-                entity: {
-                  id: entity.id,
-                  name: entity.name,
-                  type: entity.type,
-                },
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "observe": {
-        const { entity: entityName, observation, confidence = 1.0 } = args as {
-          entity: string;
-          observation: string;
-          confidence?: number;
-        };
-
-        // Ensure entity exists
-        const entity = graph.getOrCreateEntity(entityName, "person");
-
-        // Add observation
-        const obs = graph.addObservation(entity.id, observation, undefined, confidence);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                success: true,
-                entity: entity.name,
-                observation_id: obs.id,
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "relate": {
-        const { from, to, relation } = args as {
-          from: string;
-          to: string;
-          relation: string;
-        };
-
-        // Ensure both entities exist
-        const fromEntity = graph.getOrCreateEntity(from, "person");
-        const toEntity = graph.getOrCreateEntity(to, "person");
-
-        // Create relation
-        const rel = graph.relate(fromEntity.id, toEntity.id, relation);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                success: true,
-                relation: {
-                  id: rel.id,
-                  from: fromEntity.name,
-                  to: toEntity.name,
-                  type: rel.type,
-                },
-              }, null, 2),
             },
           ],
         };
