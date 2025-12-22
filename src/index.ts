@@ -75,25 +75,45 @@ const TOOLS = [
   {
     name: "remember",
     description:
-      "PRIMARY STORAGE TOOL. Use this for ALL new information - conversations, facts, observations, notes. Automatically extracts people, organizations, and places as entities and creates relationships. Do NOT also call create_entity/observe/relate - remember handles entity extraction automatically. Only use remember once per piece of information.",
+      "Store information with entities and relationships. Extract key people, organizations, and places from the content and pass them as entities. Include relationships between entities when mentioned (e.g., 'works_at', 'lives_in', 'knows').",
     inputSchema: {
       type: "object" as const,
       properties: {
         content: {
           type: "string",
-          description: "The information to store - can be a conversation snippet, fact, observation, or note",
-        },
-        source: {
-          type: "string",
-          description: "Source of the memory (e.g., 'conversation', 'note', 'import')",
-          default: "conversation",
+          description: "The information to store",
         },
         importance: {
           type: "number",
-          description: "Importance score from 0 to 1 (higher = more important). Use 0.7+ for key facts, 0.3- for casual mentions",
+          description: "0-1 score. Use 0.8+ for key facts (names, preferences, important events), 0.5 for general info, 0.3- for trivial mentions",
           minimum: 0,
           maximum: 1,
           default: 0.5,
+        },
+        entities: {
+          type: "array",
+          description: "Key entities mentioned (people, organizations, places). Only include clear, specific named entities.",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Entity name (e.g., 'Boris Djordjevic', 'Google', 'Paris')" },
+              type: { type: "string", enum: ["person", "organization", "place"], description: "Entity type" },
+            },
+            required: ["name", "type"],
+          },
+        },
+        relationships: {
+          type: "array",
+          description: "Relationships between entities mentioned in the content",
+          items: {
+            type: "object",
+            properties: {
+              from: { type: "string", description: "Source entity name" },
+              to: { type: "string", description: "Target entity name" },
+              type: { type: "string", description: "Relationship type (e.g., 'works_at', 'lives_in', 'sibling_of', 'knows')" },
+            },
+            required: ["from", "to", "type"],
+          },
         },
       },
       required: ["content"],
@@ -194,10 +214,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "remember": {
-        const { content, source = "conversation", importance = 0.5 } = args as {
+        const {
+          content,
+          source = "conversation",
+          importance = 0.5,
+          entities: providedEntities = [],
+          relationships: providedRelationships = [],
+        } = args as {
           content: string;
           source?: string;
           importance?: number;
+          entities?: Array<{ name: string; type: "person" | "organization" | "place" }>;
+          relationships?: Array<{ from: string; to: string; type: string }>;
         };
 
         // Create memory
@@ -206,8 +234,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Index for semantic search
         await search.indexMemory(memory);
 
-        // Extract and store entities/relationships
-        const { entities, observations } = graph.extractAndStore(content, memory.id);
+        // Store Claude-provided entities and link to memory
+        const storedEntities: string[] = [];
+        for (const ent of providedEntities) {
+          const entity = graph.getOrCreateEntity(ent.name, ent.type);
+          storedEntities.push(entity.name);
+          // Create observation linking entity to this memory
+          db.addObservation(entity.id, content, memory.id, 1.0);
+        }
+
+        // Store Claude-provided relationships
+        const storedRelations: string[] = [];
+        for (const rel of providedRelationships) {
+          try {
+            // Ensure both entities exist (create if not provided explicitly)
+            const fromEntity = graph.getOrCreateEntity(rel.from, "person");
+            const toEntity = graph.getOrCreateEntity(rel.to, "person");
+            graph.relate(fromEntity.name, toEntity.name, rel.type);
+            storedRelations.push(`${rel.from} -[${rel.type}]-> ${rel.to}`);
+          } catch {
+            // Skip invalid relationships
+          }
+        }
 
         return {
           content: [
@@ -216,8 +264,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify({
                 success: true,
                 memory_id: memory.id,
-                entities_extracted: entities.map((e) => e.name),
-                observations_created: observations.length,
+                entities_stored: storedEntities,
+                relationships_stored: storedRelations,
               }, null, 2),
             },
           ],

@@ -6,7 +6,6 @@
 import { EngramDatabase, Memory } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { ColBERTRetriever, SimpleRetriever, SearchResult, Document } from "./colbert.js";
-import { entityExtractor } from "../graph/extractor.js";
 
 export interface HybridSearchResult {
   memory: Memory;
@@ -183,15 +182,19 @@ export class HybridSearch {
   }
 
   /**
-   * Graph-based search: find entities in query, traverse graph
+   * Graph-based search: find known entities in query, traverse graph
    */
   private async searchGraph(query: string): Promise<string[]> {
-    // Extract entities from query
-    const entities = entityExtractor.extractAll(query);
+    // Find known entities whose names appear in the query
+    const queryLower = query.toLowerCase();
+    const allEntities = this.graph.listEntities(undefined, 500);
+    const matchedEntities = allEntities.filter(e =>
+      queryLower.includes(e.name.toLowerCase())
+    );
 
     const memoryIds = new Set<string>();
 
-    for (const entity of entities) {
+    for (const entity of matchedEntities) {
       // Find related memory IDs through graph traversal
       const relatedIds = this.graph.findRelatedMemoryIds(entity.name, 2);
       relatedIds.forEach(id => memoryIds.add(id));

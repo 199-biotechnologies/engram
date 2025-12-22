@@ -147,9 +147,8 @@ export class EngramWebServer {
       const { content, source, importance } = body as any;
       const memory = this.db.createMemory(content, source || "web", importance || 0.5);
       await this.search.indexMemory(memory);
-      const { entities, observations } = this.graph.extractAndStore(content, memory.id);
       res.writeHead(201);
-      res.end(JSON.stringify({ memory, entities_extracted: entities.length, observations_created: observations.length }));
+      res.end(JSON.stringify({ memory }));
       return;
     }
 

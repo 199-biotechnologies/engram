@@ -9,7 +9,6 @@ import {
   Observation,
   Relation,
 } from "../storage/database.js";
-import { entityExtractor, ExtractedEntity } from "./extractor.js";
 
 export interface EntityWithDetails extends Entity {
   observations: Observation[];
@@ -189,55 +188,6 @@ export class KnowledgeGraph {
       rootEntity: entity,
       ...result,
     };
-  }
-
-  // ============ Auto-extraction ============
-
-  /**
-   * Extract entities from text and add them to the graph
-   */
-  extractAndStore(
-    text: string,
-    sourceMemoryId?: string
-  ): { entities: Entity[]; observations: Observation[] } {
-    const extracted = entityExtractor.extractAll(text);
-    const entities: Entity[] = [];
-    const observations: Observation[] = [];
-
-    for (const ext of extracted) {
-      // Only store high-confidence extractions
-      if (ext.confidence < 0.5) continue;
-
-      // Get or create entity
-      const entity = this.getOrCreateEntity(ext.name, ext.type);
-      entities.push(entity);
-
-      // Create observation linking this entity to the memory content
-      const obs = this.db.addObservation(
-        entity.id,
-        text,
-        sourceMemoryId || null,
-        ext.confidence
-      );
-      observations.push(obs);
-    }
-
-    // Extract and create relationships
-    const relationships = entityExtractor.extractRelationships(text);
-    for (const rel of relationships) {
-      try {
-        // Ensure both entities exist
-        const fromEntity = this.getOrCreateEntity(rel.subject, "person");
-        const toEntity = this.getOrCreateEntity(rel.object, "person");
-
-        // Create the relation
-        this.db.createRelation(fromEntity.id, toEntity.id, rel.relation);
-      } catch {
-        // Silently ignore relation creation failures
-      }
-    }
-
-    return { entities, observations };
   }
 
   /**
