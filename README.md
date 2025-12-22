@@ -31,18 +31,19 @@ Engram connects the dots—*avoid seafood restaurants, book Sarah a window seat,
 ### Install
 
 ```bash
-npm install -g engram-mcp
+npm install -g @199-bio/engram
 ```
 
 ### Add to Your MCP Client
 
-**Claude Desktop** — add to `~/.claude/claude_desktop_config.json`:
+**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "engram": {
-      "command": "engram"
+      "command": "npx",
+      "args": ["-y", "@199-bio/engram"]
     }
   }
 }
@@ -51,7 +52,7 @@ npm install -g engram-mcp
 **Claude Code:**
 
 ```bash
-claude mcp add engram -- engram
+claude mcp add engram -- npx -y @199-bio/engram
 ```
 
 **Other MCP clients** — point to the `engram` command. It speaks standard MCP over stdio.

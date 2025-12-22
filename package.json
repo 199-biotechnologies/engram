@@ -1,5 +1,5 @@
 {
-  "name": "engram-mcp",
+  "name": "@199-bio/engram",
   "version": "0.1.0",
   "description": "Give Claude a perfect memory. Local-first MCP server with hybrid search.",
   "type": "module",
