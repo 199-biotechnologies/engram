@@ -10,7 +10,7 @@ import { fileURLToPath } from "url";
 import { EngramDatabase } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
-import { ColBERTRetriever, SimpleRetriever } from "../retrieval/colbert.js";
+import { ChatHandler } from "./chat-handler.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,12 +38,18 @@ export class EngramWebServer {
   private db: EngramDatabase;
   private graph: KnowledgeGraph;
   private search: HybridSearch;
+  private chat: ChatHandler;
   private port: number;
 
   constructor(options: WebServerOptions) {
     this.db = options.db;
     this.graph = options.graph;
     this.search = options.search;
+    this.chat = new ChatHandler({
+      db: options.db,
+      graph: options.graph,
+      search: options.search,
+    });
     this.port = options.port || 3847;
   }
 
@@ -263,6 +269,38 @@ export class EngramWebServer {
         observations_moved: observationsMoved,
         relations_moved: relationsMoved,
       }));
+      return;
+    }
+
+    // GET /api/chat/status - check if chat is configured
+    if (pathname === "/api/chat/status" && method === "GET") {
+      res.end(JSON.stringify({
+        configured: this.chat.isConfigured(),
+        message: this.chat.isConfigured()
+          ? "Chat is ready"
+          : "Set ANTHROPIC_API_KEY environment variable to enable chat",
+      }));
+      return;
+    }
+
+    // POST /api/chat - send a message
+    if (pathname === "/api/chat" && method === "POST") {
+      const { message } = body as { message: string };
+      if (!message) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "Message is required" }));
+        return;
+      }
+
+      const response = await this.chat.chat(message);
+      res.end(JSON.stringify({ response }));
+      return;
+    }
+
+    // POST /api/chat/clear - clear chat history
+    if (pathname === "/api/chat/clear" && method === "POST") {
+      this.chat.clearHistory();
+      res.end(JSON.stringify({ success: true }));
       return;
     }
 

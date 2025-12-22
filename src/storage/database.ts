@@ -471,6 +471,18 @@ export class EngramDatabase {
     return result.changes > 0;
   }
 
+  updateEntity(id: string, updates: { name?: string; type?: Entity["type"] }): Entity | null {
+    const entity = this.getEntity(id);
+    if (!entity) return null;
+
+    const newName = updates.name ?? entity.name;
+    const newType = updates.type ?? entity.type;
+
+    const stmt = this.db.prepare("UPDATE entities SET name = ?, type = ? WHERE id = ?");
+    stmt.run(newName, newType, id);
+    return this.getEntity(id);
+  }
+
   // ============ Observation Operations ============
 
   addObservation(

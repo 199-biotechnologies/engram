@@ -60,7 +60,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.4.1",
+    version: "0.4.2",
   },
   {
     capabilities: {

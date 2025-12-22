@@ -357,6 +357,143 @@ entityModal.addEventListener('click', (e) => {
   if (e.target === entityModal) entityModal.classList.add('hidden');
 });
 
+// ============ Chat Panel ============
+
+const chatPanel = document.getElementById('chat-panel');
+const chatToggle = document.getElementById('chat-toggle');
+const chatClose = document.getElementById('chat-close');
+const chatClear = document.getElementById('chat-clear');
+const chatMessages = document.getElementById('chat-messages');
+const chatStatus = document.getElementById('chat-status');
+const chatForm = document.getElementById('chat-form');
+const chatInput = document.getElementById('chat-input');
+
+let chatConfigured = false;
+
+// Check if chat is configured
+async function checkChatStatus() {
+  try {
+    const data = await api('/api/chat/status');
+    chatConfigured = data.configured;
+    if (!chatConfigured) {
+      chatStatus.textContent = data.message;
+      chatStatus.classList.add('error');
+      chatInput.disabled = true;
+    } else {
+      chatStatus.textContent = '';
+      chatStatus.classList.remove('error');
+      chatInput.disabled = false;
+    }
+  } catch (e) {
+    chatStatus.textContent = 'Failed to connect to chat service';
+    chatStatus.classList.add('error');
+  }
+}
+
+// Toggle chat panel
+function toggleChat() {
+  const isHidden = chatPanel.classList.contains('hidden');
+  chatPanel.classList.toggle('hidden');
+  chatToggle.classList.toggle('active', isHidden);
+  document.body.classList.toggle('chat-open', isHidden);
+
+  if (isHidden) {
+    checkChatStatus();
+    chatInput.focus();
+  }
+}
+
+// Add message to chat
+function addChatMessage(content, role) {
+  const div = document.createElement('div');
+  div.className = `chat-message ${role}`;
+
+  // Simple markdown-like parsing
+  const formatted = content
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+
+  div.innerHTML = `<p>${formatted}</p>`;
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// Send chat message
+async function sendChatMessage(message) {
+  if (!message.trim()) return;
+
+  // Add user message
+  addChatMessage(message, 'user');
+  chatInput.value = '';
+  chatInput.disabled = true;
+
+  // Show thinking indicator
+  const thinkingDiv = document.createElement('div');
+  thinkingDiv.className = 'chat-message thinking';
+  thinkingDiv.innerHTML = '<p>Thinking...</p>';
+  chatMessages.appendChild(thinkingDiv);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  try {
+    const data = await api('/api/chat', {
+      method: 'POST',
+      body: { message },
+    });
+
+    // Remove thinking indicator
+    thinkingDiv.remove();
+
+    // Add assistant response
+    addChatMessage(data.response, 'assistant');
+
+    // Refresh data in case something changed
+    loadStats();
+    if (currentView === 'entities') loadEntities(entityTypeFilter.value);
+    if (currentView === 'graph') loadGraph();
+    if (currentView === 'memories') loadMemories(searchInput.value);
+
+  } catch (e) {
+    thinkingDiv.remove();
+    addChatMessage('Error: Failed to get response. Please try again.', 'assistant');
+  }
+
+  chatInput.disabled = false;
+  chatInput.focus();
+}
+
+// Clear chat history
+async function clearChatHistory() {
+  try {
+    await api('/api/chat/clear', { method: 'POST' });
+    // Keep only the initial welcome message
+    chatMessages.innerHTML = `
+      <div class="chat-message assistant">
+        <p>Hi! I can help you manage your memories and entities. Try:</p>
+        <ul>
+          <li>"Show me all entities"</li>
+          <li>"Find duplicates"</li>
+          <li>"Merge Boris into Boris Djordjevic"</li>
+          <li>"Delete the entity 'crashed'"</li>
+        </ul>
+      </div>
+    `;
+  } catch (e) {
+    console.error('Failed to clear chat history', e);
+  }
+}
+
+// Chat event listeners
+chatToggle.addEventListener('click', toggleChat);
+chatClose.addEventListener('click', toggleChat);
+chatClear.addEventListener('click', clearChatHistory);
+
+chatForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  sendChatMessage(chatInput.value);
+});
+
 // Initialize
 loadStats();
 loadMemories();
