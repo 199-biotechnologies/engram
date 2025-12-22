@@ -19,6 +19,7 @@ import { EngramDatabase } from "./storage/database.js";
 import { KnowledgeGraph } from "./graph/knowledge-graph.js";
 import { createRetriever } from "./retrieval/colbert.js";
 import { HybridSearch } from "./retrieval/hybrid.js";
+import { EngramWebServer } from "./web/server.js";
 
 // ============ Configuration ============
 
@@ -33,6 +34,7 @@ const DB_FILE = path.join(DB_PATH, "engram.db");
 let db: EngramDatabase;
 let graph: KnowledgeGraph;
 let search: HybridSearch;
+let webServer: EngramWebServer | null = null;
 
 async function initialize(): Promise<void> {
   console.error(`[Engram] Initializing with database at ${DB_FILE}`);
@@ -58,7 +60,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.2.0",
+    version: "0.3.0",
   },
   {
     capabilities: {
@@ -301,6 +303,27 @@ const TOOLS = [
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
+    },
+  },
+  {
+    name: "engram_web",
+    description: "Launch the Engram web interface for browsing, searching, and editing memories visually. Returns a URL to open in your browser.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        port: {
+          type: "number",
+          description: "Port to run the web server on (default: 3847)",
+          default: 3847,
+        },
+      },
+    },
+    annotations: {
+      title: "Launch Web Interface",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
 ];
@@ -581,6 +604,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify({
                 ...stats,
                 database_path: DB_FILE,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "engram_web": {
+        const { port = 3847 } = args as { port?: number };
+
+        // Create or reuse web server
+        if (!webServer) {
+          webServer = new EngramWebServer({ db, graph, search, port });
+        }
+
+        const url = await webServer.start();
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                success: true,
+                url,
+                message: `Web interface running at ${url}`,
               }, null, 2),
             },
           ],

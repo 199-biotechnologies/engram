@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engram</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Engram</h1>
+    <nav>
+      <button class="nav-btn active" data-view="memories">Memories</button>
+      <button class="nav-btn" data-view="entities">Entities</button>
+      <button class="nav-btn" data-view="graph">Graph</button>
+    </nav>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <main>
+    <!-- Memories View -->
+    <section id="memories-view" class="view active">
+      <div class="search-bar">
+        <input type="text" id="search-input" placeholder="Search memories...">
+        <button id="search-btn">Search</button>
+      </div>
+
+      <div class="toolbar">
+        <button id="add-memory-btn">+ Add Memory</button>
+      </div>
+
+      <div id="memories-list" class="list"></div>
+    </section>
+
+    <!-- Entities View -->
+    <section id="entities-view" class="view">
+      <div class="filter-bar">
+        <select id="entity-type-filter">
+          <option value="">All Types</option>
+          <option value="person">Person</option>
+          <option value="organization">Organization</option>
+          <option value="place">Place</option>
+          <option value="concept">Concept</option>
+          <option value="event">Event</option>
+        </select>
+      </div>
+
+      <div id="entities-list" class="list"></div>
+    </section>
+
+    <!-- Graph View -->
+    <section id="graph-view" class="view">
+      <div id="graph-container"></div>
+    </section>
+  </main>
+
+  <!-- Modal for adding/editing -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h2 id="modal-title">Add Memory</h2>
+      <form id="modal-form">
+        <textarea id="modal-content-input" placeholder="Memory content..." rows="6"></textarea>
+        <div class="form-row">
+          <label>
+            Source:
+            <input type="text" id="modal-source" value="web">
+          </label>
+          <label>
+            Importance:
+            <input type="range" id="modal-importance" min="0" max="1" step="0.1" value="0.5">
+            <span id="importance-value">0.5</span>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="modal-cancel">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Entity Detail Modal -->
+  <div id="entity-modal" class="modal hidden">
+    <div class="modal-content">
+      <h2 id="entity-modal-title"></h2>
+      <div id="entity-modal-body"></div>
+      <div class="modal-actions">
+        <button type="button" id="entity-modal-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

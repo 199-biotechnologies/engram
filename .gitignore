@@ -10,6 +10,7 @@ dist/
 !jest.config.js
 !vitest.config.js
 !tests/*.js
+!src/web/static/*.js
 
 # Models (downloaded separately)
 models/
