@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+*.js
+*.d.ts
+*.js.map
+!jest.config.js
+!vitest.config.js
+!tests/*.js
+
+# Models (downloaded separately)
+models/
+*.onnx
+*.bin
+*.safetensors
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+.engram/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.python-version
+
+# ColBERT indexes
+.ragatouille/
+colbert_indexes/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary
+tmp/
+temp/
+*.tmp
