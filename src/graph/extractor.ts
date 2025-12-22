@@ -10,25 +10,73 @@ export interface ExtractedEntity {
   span: { start: number; end: number };
 }
 
-// Common words that look like names but aren't
+// Common words that look like names but aren't (including verbs, adjectives, common nouns)
 const STOPWORDS = new Set([
+  // Articles, conjunctions, prepositions
   "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
   "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
   "be", "have", "has", "had", "do", "does", "did", "will", "would",
   "could", "should", "may", "might", "must", "shall", "can", "need",
+  // Pronouns
   "this", "that", "these", "those", "i", "you", "he", "she", "it",
   "we", "they", "what", "which", "who", "whom", "whose", "where",
   "when", "why", "how", "all", "each", "every", "both", "few", "more",
   "most", "other", "some", "such", "no", "not", "only", "same", "so",
   "than", "too", "very", "just", "also", "now", "here", "there", "then",
+  // Conjunctions
   "if", "because", "while", "although", "though", "after", "before",
   "since", "until", "unless", "however", "therefore", "thus", "hence",
+  // Days and months
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
   "january", "february", "march", "april", "may", "june", "july",
   "august", "september", "october", "november", "december",
+  // Time words
   "today", "tomorrow", "yesterday", "morning", "afternoon", "evening", "night",
+  // Common verbs (often capitalized at sentence start)
   "said", "says", "told", "asked", "replied", "answered", "mentioned",
   "think", "know", "believe", "feel", "want", "need", "like", "love",
+  "crashed", "gets", "getting", "got", "planning", "planned", "plans",
+  "working", "worked", "works", "going", "went", "gone", "coming", "came",
+  "looking", "looked", "looks", "trying", "tried", "tries", "using", "used",
+  "making", "made", "makes", "taking", "took", "takes", "giving", "gave",
+  "seeing", "saw", "seen", "being", "having", "doing", "saying", "getting",
+  "finding", "found", "keeping", "kept", "letting", "let", "putting", "put",
+  "running", "ran", "calling", "called", "moving", "moved", "living", "lived",
+  "starting", "started", "seems", "seemed", "showing", "showed", "hearing",
+  "playing", "played", "standing", "stood", "understanding", "understood",
+  "turning", "turned", "following", "followed", "watching", "watched",
+  "adding", "added", "changing", "changed", "writing", "wrote", "reading",
+  "learning", "learned", "growing", "grew", "opening", "opened", "walking",
+  "winning", "won", "offering", "offered", "remembering", "remembered",
+  "considering", "considered", "appearing", "appeared", "buying", "bought",
+  "waiting", "waited", "serving", "served", "dying", "died", "sending", "sent",
+  "building", "built", "staying", "stayed", "falling", "fell", "cutting", "cut",
+  "reaching", "reached", "killing", "killed", "raising", "raised", "passing",
+  "selling", "sold", "deciding", "decided", "returning", "returned",
+  // Common adjectives (often capitalized at sentence start)
+  "good", "bad", "great", "small", "large", "big", "little", "old", "young",
+  "new", "first", "last", "long", "short", "high", "low", "right", "wrong",
+  "next", "early", "late", "hard", "easy", "clear", "full", "empty", "ready",
+  "sure", "open", "closed", "free", "busy", "hot", "cold", "warm", "cool",
+  "fast", "slow", "strong", "weak", "deep", "wide", "near", "far", "dark",
+  "light", "heavy", "simple", "complex", "real", "true", "false", "best",
+  "worst", "happy", "sad", "angry", "afraid", "sorry", "glad", "nice",
+  "fine", "okay", "different", "similar", "same", "special", "important",
+  "interesting", "beautiful", "wonderful", "terrible", "amazing", "awesome",
+  // Common nouns (sentence starters)
+  "people", "time", "year", "years", "way", "day", "days", "man", "woman",
+  "child", "children", "world", "life", "hand", "part", "place", "case",
+  "week", "weeks", "company", "system", "program", "question", "work",
+  "government", "number", "point", "home", "water", "room", "mother",
+  "area", "money", "story", "fact", "month", "months", "lot", "right",
+  "study", "book", "books", "eye", "eyes", "job", "word", "words",
+  "business", "issue", "issues", "side", "kind", "head", "house", "service",
+  "friend", "friends", "power", "hour", "hours", "game", "line", "end",
+  "member", "members", "law", "car", "city", "community", "name", "names",
+  "team", "minute", "minutes", "idea", "ideas", "body", "information",
+  "back", "parent", "parents", "face", "others", "level", "office", "door",
+  "health", "person", "art", "war", "history", "party", "result", "change",
+  "reason", "research", "girl", "guy", "moment", "air", "teacher", "force",
 ]);
 
 // Common titles that precede names

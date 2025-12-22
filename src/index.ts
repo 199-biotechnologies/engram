@@ -60,7 +60,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.3.2",
+    version: "0.4.0",
   },
   {
     capabilities: {
@@ -155,68 +155,6 @@ const TOOLS = [
       title: "Delete Memory",
       readOnlyHint: false,
       destructiveHint: true,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "query_entity",
-    description: "Get all stored information about a specific person, place, or organization. Use after recall to get deeper details about an entity mentioned in search results.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        entity: {
-          type: "string",
-          description: "Entity name to query",
-        },
-      },
-      required: ["entity"],
-    },
-    annotations: {
-      title: "Query Entity",
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "list_entities",
-    description: "List all known entities (people, places, organizations, etc.). Use to browse the knowledge graph or find entity names for query_entity.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        type: {
-          type: "string",
-          enum: ["person", "place", "concept", "event", "organization"],
-          description: "Filter by entity type (optional)",
-        },
-        limit: {
-          type: "number",
-          description: "Maximum number of entities to return",
-          default: 50,
-        },
-      },
-    },
-    annotations: {
-      title: "List Entities",
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: "stats",
-    description: "Get memory statistics (counts of memories, entities, relations, observations)",
-    inputSchema: {
-      type: "object" as const,
-      properties: {},
-    },
-    annotations: {
-      title: "Get Statistics",
-      readOnlyHint: true,
-      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -350,93 +288,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: "text" as const,
               text: JSON.stringify({ success: true, deleted_id: id }),
-            },
-          ],
-        };
-      }
-
-      case "query_entity": {
-        const { entity: entityName } = args as { entity: string };
-
-        const details = graph.getEntityDetails(entityName);
-
-        if (!details) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({ success: false, error: "Entity not found" }),
-              },
-            ],
-          };
-        }
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                entity: {
-                  id: details.id,
-                  name: details.name,
-                  type: details.type,
-                  created_at: details.created_at.toISOString(),
-                },
-                observations: details.observations.map((o) => ({
-                  content: o.content.substring(0, 200) + (o.content.length > 200 ? "..." : ""),
-                  confidence: o.confidence,
-                  valid_from: o.valid_from.toISOString(),
-                })),
-                relations_from: details.relationsFrom.map((r) => ({
-                  type: r.type,
-                  to: r.targetEntity.name,
-                })),
-                relations_to: details.relationsTo.map((r) => ({
-                  type: r.type,
-                  from: r.sourceEntity.name,
-                })),
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "list_entities": {
-        const { type, limit = 50 } = args as {
-          type?: "person" | "place" | "concept" | "event" | "organization";
-          limit?: number;
-        };
-
-        const entities = graph.listEntities(type, limit);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                entities: entities.map((e) => ({
-                  id: e.id,
-                  name: e.name,
-                  type: e.type,
-                })),
-                count: entities.length,
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "stats": {
-        const stats = db.getStats();
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                ...stats,
-                database_path: DB_FILE,
-              }, null, 2),
             },
           ],
         };

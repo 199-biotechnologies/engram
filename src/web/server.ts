@@ -226,6 +226,47 @@ export class EngramWebServer {
       return;
     }
 
+    // GET /api/tidy - analyze duplicates
+    if (pathname === "/api/tidy" && method === "GET") {
+      const duplicates = this.db.findDuplicateEntities();
+      res.end(JSON.stringify({
+        duplicate_groups: duplicates.map((d) => ({
+          keep: { id: d.entity.id, name: d.entity.name, type: d.entity.type },
+          merge: d.potentialDuplicates.map((p) => ({
+            id: p.id,
+            name: p.name,
+            type: p.type,
+          })),
+        })),
+        total_duplicates: duplicates.reduce((sum, d) => sum + d.potentialDuplicates.length, 0),
+      }));
+      return;
+    }
+
+    // POST /api/tidy - merge duplicates
+    if (pathname === "/api/tidy" && method === "POST") {
+      const duplicates = this.db.findDuplicateEntities();
+      let totalMerged = 0;
+      let observationsMoved = 0;
+      let relationsMoved = 0;
+
+      for (const group of duplicates) {
+        for (const dupe of group.potentialDuplicates) {
+          const result = this.db.mergeEntities(group.entity.id, dupe.id);
+          totalMerged++;
+          observationsMoved += result.observationsMoved;
+          relationsMoved += result.relationsMoved;
+        }
+      }
+
+      res.end(JSON.stringify({
+        entities_merged: totalMerged,
+        observations_moved: observationsMoved,
+        relations_moved: relationsMoved,
+      }));
+      return;
+    }
+
     // 404 for unknown API routes
     res.writeHead(404);
     res.end(JSON.stringify({ error: "Not found" }));

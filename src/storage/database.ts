@@ -359,6 +359,41 @@ export class EngramDatabase {
   }
 
   /**
+   * Merge two entities: transfers all observations and relations from source to target, then deletes source
+   */
+  mergeEntities(targetId: string, sourceId: string): { observationsMoved: number; relationsMoved: number } {
+    // Move observations from source to target
+    const obsResult = this.db.prepare(
+      "UPDATE observations SET entity_id = ? WHERE entity_id = ?"
+    ).run(targetId, sourceId);
+
+    // Move relations where source is from_entity
+    const relFromResult = this.db.prepare(
+      "UPDATE relations SET from_entity = ? WHERE from_entity = ?"
+    ).run(targetId, sourceId);
+
+    // Move relations where source is to_entity
+    const relToResult = this.db.prepare(
+      "UPDATE relations SET to_entity = ? WHERE to_entity = ?"
+    ).run(targetId, sourceId);
+
+    // Delete duplicate relations (same from, to, type)
+    this.db.prepare(`
+      DELETE FROM relations WHERE id NOT IN (
+        SELECT MIN(id) FROM relations GROUP BY from_entity, to_entity, type
+      )
+    `).run();
+
+    // Delete the source entity
+    this.deleteEntity(sourceId);
+
+    return {
+      observationsMoved: obsResult.changes,
+      relationsMoved: relFromResult.changes + relToResult.changes,
+    };
+  }
+
+  /**
    * Find all potential duplicate entities
    */
   findDuplicateEntities(): Array<{ entity: Entity; potentialDuplicates: Entity[] }> {
