@@ -266,12 +266,140 @@ export class EngramDatabase {
   }
 
   findEntityByName(name: string): Entity | null {
+    // First try exact match (case-insensitive)
     const row = this.stmt("SELECT * FROM entities WHERE LOWER(name) = LOWER(?)").get(name) as Record<string, unknown> | undefined;
-    return row ? this.rowToEntity(row) : null;
+    if (row) return this.rowToEntity(row);
+
+    // If no exact match, try fuzzy match for potential duplicates
+    const fuzzyMatch = this.findSimilarEntity(name);
+    return fuzzyMatch;
+  }
+
+  /**
+   * Find a similar entity using fuzzy matching
+   * Catches "Boris D" matching "Boris Djordjevic", "John" matching "John Smith"
+   */
+  findSimilarEntity(name: string, threshold: number = 0.8): Entity | null {
+    const normalizedName = name.toLowerCase().trim();
+    const nameWords = normalizedName.split(/\s+/);
+
+    // Get candidates: entities that share at least one word with the query
+    const candidates = this.stmt(`
+      SELECT * FROM entities
+      WHERE LOWER(name) LIKE ?
+      LIMIT 100
+    `).all(`%${nameWords[0]}%`) as Record<string, unknown>[];
+
+    let bestMatch: Entity | null = null;
+    let bestScore = 0;
+
+    for (const row of candidates) {
+      const entity = this.rowToEntity(row);
+      const entityName = entity.name.toLowerCase();
+      const entityWords = entityName.split(/\s+/);
+
+      // Calculate similarity score
+      const score = this.calculateNameSimilarity(nameWords, entityWords, normalizedName, entityName);
+
+      if (score >= threshold && score > bestScore) {
+        bestScore = score;
+        bestMatch = entity;
+      }
+    }
+
+    return bestMatch;
+  }
+
+  /**
+   * Calculate similarity between two names
+   * Returns 0-1 score (1 = identical)
+   */
+  private calculateNameSimilarity(
+    words1: string[],
+    words2: string[],
+    full1: string,
+    full2: string
+  ): number {
+    // Exact match
+    if (full1 === full2) return 1.0;
+
+    // One is prefix of the other (e.g., "Boris" vs "Boris Djordjevic")
+    if (full1.startsWith(full2 + " ") || full2.startsWith(full1 + " ")) {
+      return 0.9;
+    }
+
+    // First word matches (e.g., "John" vs "John Smith")
+    if (words1[0] === words2[0]) {
+      // Same first word, different lengths
+      const longer = Math.max(words1.length, words2.length);
+      const shorter = Math.min(words1.length, words2.length);
+      return 0.7 + (0.2 * shorter / longer);
+    }
+
+    // Check for abbreviated names (e.g., "Boris D" vs "Boris Djordjevic")
+    if (words1.length >= 2 && words2.length >= 2) {
+      const last1 = words1[words1.length - 1];
+      const last2 = words2[words2.length - 1];
+
+      // Check if one is abbreviation of the other
+      if (last1.length === 1 && last2.startsWith(last1)) {
+        return 0.85;
+      }
+      if (last2.length === 1 && last1.startsWith(last2)) {
+        return 0.85;
+      }
+    }
+
+    // Count shared words
+    const set1 = new Set(words1);
+    const shared = words2.filter(w => set1.has(w)).length;
+    const total = Math.max(words1.length, words2.length);
+
+    return shared / total * 0.7;
+  }
+
+  /**
+   * Find all potential duplicate entities
+   */
+  findDuplicateEntities(): Array<{ entity: Entity; potentialDuplicates: Entity[] }> {
+    const entities = this.listEntities(undefined, 1000);
+    const duplicates: Array<{ entity: Entity; potentialDuplicates: Entity[] }> = [];
+    const processed = new Set<string>();
+
+    for (const entity of entities) {
+      if (processed.has(entity.id)) continue;
+
+      const potentialDupes: Entity[] = [];
+      const words = entity.name.toLowerCase().split(/\s+/);
+
+      for (const other of entities) {
+        if (other.id === entity.id || processed.has(other.id)) continue;
+
+        const otherWords = other.name.toLowerCase().split(/\s+/);
+        const score = this.calculateNameSimilarity(
+          words, otherWords,
+          entity.name.toLowerCase(),
+          other.name.toLowerCase()
+        );
+
+        if (score >= 0.8) {
+          potentialDupes.push(other);
+          processed.add(other.id);
+        }
+      }
+
+      if (potentialDupes.length > 0) {
+        duplicates.push({ entity, potentialDuplicates: potentialDupes });
+        processed.add(entity.id);
+      }
+    }
+
+    return duplicates;
   }
 
   searchEntities(query: string, type?: Entity["type"]): Entity[] {
-    let sql = "SELECT * FROM entities WHERE name LIKE ?";
+    // Case-insensitive search
+    let sql = "SELECT * FROM entities WHERE LOWER(name) LIKE LOWER(?)";
     const params: unknown[] = [`%${query}%`];
 
     if (type) {

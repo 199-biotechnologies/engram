@@ -60,7 +60,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.3.0",
+    version: "0.3.1",
   },
   {
     capabilities: {
@@ -70,17 +70,18 @@ const server = new Server(
 );
 
 // Tool definitions with MCP 2025-06-18 annotations
+// Descriptions are carefully written to guide Claude on when to use each tool
 const TOOLS = [
   {
     name: "remember",
     description:
-      "Store a new memory. Automatically extracts entities and relationships for the knowledge graph.",
+      "PRIMARY STORAGE TOOL. Use this for ALL new information - conversations, facts, observations, notes. Automatically extracts people, organizations, and places as entities and creates relationships. Do NOT also call create_entity/observe/relate - remember handles entity extraction automatically. Only use remember once per piece of information.",
     inputSchema: {
       type: "object" as const,
       properties: {
         content: {
           type: "string",
-          description: "The memory content to store",
+          description: "The information to store - can be a conversation snippet, fact, observation, or note",
         },
         source: {
           type: "string",
@@ -89,7 +90,7 @@ const TOOLS = [
         },
         importance: {
           type: "number",
-          description: "Importance score from 0 to 1 (higher = more important)",
+          description: "Importance score from 0 to 1 (higher = more important). Use 0.7+ for key facts, 0.3- for casual mentions",
           minimum: 0,
           maximum: 1,
           default: 0.5,
@@ -108,7 +109,7 @@ const TOOLS = [
   {
     name: "recall",
     description:
-      "Retrieve relevant memories using hybrid search (BM25 keywords + semantic + knowledge graph). Returns the most relevant memories for a query.",
+      "PRIMARY SEARCH TOOL. Use this FIRST when answering any question about stored information. Searches across all memories using semantic understanding, keywords, and knowledge graph connections. Returns relevant memories with context.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -139,7 +140,7 @@ const TOOLS = [
   },
   {
     name: "forget",
-    description: "Remove a specific memory by its ID",
+    description: "Delete a specific memory by its ID. Use only when explicitly asked to remove information.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -160,13 +161,13 @@ const TOOLS = [
   },
   {
     name: "create_entity",
-    description: "Create a new entity in the knowledge graph (person, place, concept, etc.)",
+    description: "ADVANCED: Manually create an entity. Rarely needed - remember auto-extracts entities. Only use when: (1) creating an entity that won't appear in any memory content, or (2) correcting entity type after auto-extraction.",
     inputSchema: {
       type: "object" as const,
       properties: {
         name: {
           type: "string",
-          description: "Entity name (e.g., 'John', 'Paris', 'Machine Learning')",
+          description: "Entity name (e.g., 'John Smith', 'Paris', 'Machine Learning')",
         },
         type: {
           type: "string",
@@ -186,13 +187,13 @@ const TOOLS = [
   },
   {
     name: "observe",
-    description: "Add an observation or fact about an entity",
+    description: "ADVANCED: Add a fact to an EXISTING entity without creating a memory. Rarely needed - use remember instead, which stores the content AND links it to entities. Only use observe for adding metadata or corrections to entities.",
     inputSchema: {
       type: "object" as const,
       properties: {
         entity: {
           type: "string",
-          description: "Entity name to add observation to",
+          description: "Entity name to add observation to (must already exist)",
         },
         observation: {
           type: "string",
@@ -216,7 +217,7 @@ const TOOLS = [
   },
   {
     name: "relate",
-    description: "Create a relationship between two entities in the knowledge graph",
+    description: "ADVANCED: Manually create a relationship between two entities. Rarely needed - remember auto-extracts relationships from text. Only use when: (1) the relationship wasn't captured by auto-extraction, or (2) you need to add a relationship not mentioned in any memory.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -245,7 +246,7 @@ const TOOLS = [
   },
   {
     name: "query_entity",
-    description: "Get detailed information about an entity including all observations and relationships",
+    description: "Get all stored information about a specific person, place, or organization. Use after recall to get deeper details about an entity mentioned in search results.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -266,7 +267,7 @@ const TOOLS = [
   },
   {
     name: "list_entities",
-    description: "List all entities, optionally filtered by type",
+    description: "List all known entities (people, places, organizations, etc.). Use to browse the knowledge graph or find entity names for query_entity.",
     inputSchema: {
       type: "object" as const,
       properties: {
