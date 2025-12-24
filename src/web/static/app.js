@@ -376,17 +376,21 @@ async function checkChatStatus() {
     const data = await api('/api/chat/status');
     chatConfigured = data.configured;
     if (!chatConfigured) {
-      chatStatus.textContent = data.message;
+      chatStatus.textContent = 'Set ANTHROPIC_API_KEY env var to enable chat';
       chatStatus.classList.add('error');
       chatInput.disabled = true;
+      chatInput.placeholder = 'Chat disabled - API key not configured';
     } else {
       chatStatus.textContent = '';
       chatStatus.classList.remove('error');
       chatInput.disabled = false;
+      chatInput.placeholder = 'Ask me to manage entities...';
     }
   } catch (e) {
     chatStatus.textContent = 'Failed to connect to chat service';
     chatStatus.classList.add('error');
+    chatInput.disabled = true;
+    chatInput.placeholder = 'Chat unavailable';
   }
 }
 
@@ -470,13 +474,15 @@ async function clearChatHistory() {
     // Keep only the initial welcome message
     chatMessages.innerHTML = `
       <div class="chat-message assistant">
-        <p>Hi! I can help you manage your memories and entities. Try:</p>
+        <p>Hi! I can help you manage your memories and entities.</p>
+        <p><strong>Examples:</strong></p>
         <ul>
           <li>"Show me all entities"</li>
           <li>"Find duplicates"</li>
           <li>"Merge Boris into Boris Djordjevic"</li>
           <li>"Delete the entity 'crashed'"</li>
         </ul>
+        <p style="font-size: 0.8em; color: var(--text-muted); margin-top: 0.5rem;">Requires ANTHROPIC_API_KEY environment variable.</p>
       </div>
     `;
   } catch (e) {

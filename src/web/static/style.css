@@ -463,6 +463,8 @@ button:disabled {
 
 .chat-panel.hidden {
   transform: translateX(100%);
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .chat-header {
@@ -607,6 +609,12 @@ button:disabled {
 .chat-input-form input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.chat-input-form input:disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 .chat-input-form input::placeholder {
