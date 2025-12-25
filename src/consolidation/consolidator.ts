@@ -14,30 +14,40 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { EngramDatabase, Memory, Digest } from "../storage/database.js";
 
-const CONSOLIDATION_SYSTEM = `You are a memory consolidation system. Your job is to:
+const CONSOLIDATION_SYSTEM = `You are a high-quality memory consolidation system for a personal AI assistant. Your goal is to create comprehensive, nuanced digests that preserve the richness of human experience and relationships.
 
-1. CONSOLIDATE: Take a batch of related memories and produce a concise summary that preserves all important facts, dates, names, and relationships. Be factual and precise.
+## Your Tasks
 
-2. DETECT CONTRADICTIONS: If any memories contain conflicting information (e.g., different ages, dates, locations, or facts about the same topic), identify them clearly.
+1. **CONSOLIDATE**: Synthesize memories into a detailed digest that:
+   - Preserves ALL specific facts: names, dates, numbers, locations, preferences
+   - Captures relationships, emotions, context, and nuance
+   - Maintains chronological awareness (what happened when)
+   - Notes patterns, recurring themes, and changes over time
+   - Includes direct quotes when they reveal personality or important details
 
-Output JSON with this structure:
+2. **DETECT CONTRADICTIONS**: Flag genuinely conflicting information:
+   - Different dates/times for the same event
+   - Conflicting facts about the same person/thing
+   - Changed preferences or circumstances (note if this might be natural evolution vs. error)
+
+## Output Format (JSON)
 {
-  "digest": "Your consolidated summary here. Include all key facts, dates, names. Be concise but complete.",
-  "topic": "A short topic label (2-5 words)",
+  "digest": "Comprehensive summary preserving all important details, context, and nuance. Multiple paragraphs are fine for complex topics.",
+  "topic": "Short topic label (2-5 words)",
   "contradictions": [
     {
-      "description": "Clear description of the contradiction",
+      "description": "Precise description of the conflict",
       "memory_ids": ["id1", "id2"]
     }
   ]
 }
 
-Rules:
-- Preserve specific details: names, numbers, dates, locations
-- Use present tense for current facts, past tense for past events
-- If memories are about a person, structure the digest around that person
-- Only flag true contradictions (not just incomplete information)
-- Be concise - consolidate 10 memories into 2-3 sentences typically`;
+## Quality Standards
+- NEVER sacrifice important details for brevity
+- Include temporal context (when things happened/changed)
+- Preserve personality, preferences, and relationship dynamics
+- If memories span different time periods, note the evolution
+- Only flag true contradictions, not incomplete information or natural life changes`;
 
 interface ConsolidationResult {
   digest: string;
@@ -166,20 +176,28 @@ export class Consolidator {
       )
       .join("\n\n");
 
-    const userPrompt = `Consolidate these ${memories.length} memories into a single digest. Identify any contradictions.
+    const userPrompt = `Synthesize these ${memories.length} memories into a comprehensive digest.
+
+Think deeply about:
+- What are the key facts, events, and details?
+- Who are the people involved and how do they relate?
+- What preferences, opinions, or patterns emerge?
+- Is there a chronological narrative or timeline?
+- Are there any contradictions between memories?
 
 MEMORIES:
 ${memoriesText}
 
-Respond with JSON only.`;
+Create a detailed digest that preserves all important information. Respond with JSON only.`;
 
     try {
       const response = await this.client.messages.create({
         model: "claude-opus-4-5-20251101",
         max_tokens: 16000,
+        temperature: 1, // Required for extended thinking
         thinking: {
           type: "enabled",
-          budget_tokens: 4000,
+          budget_tokens: 10000, // High budget for thorough analysis
         },
         messages: [
           {
@@ -246,20 +264,29 @@ Respond with JSON only.`;
       )
       .join("\n\n");
 
-    const userPrompt = `Create a comprehensive profile for the entity "${entity.name}" (${entity.type}) based on these memories. Include all known facts, relationships, preferences, and history.
+    const userPrompt = `Create a comprehensive, detailed profile for "${entity.name}" (${entity.type}).
+
+This profile will serve as the authoritative reference for everything known about this ${entity.type}. Include:
+- All biographical/descriptive facts
+- Relationships with other people/entities
+- Preferences, opinions, personality traits
+- Timeline of events and changes over time
+- Notable quotes or characteristic expressions
+- Any context that helps understand this ${entity.type}
 
 MEMORIES ABOUT ${entity.name}:
 ${memoriesText}
 
-Respond with JSON only.`;
+Create a rich, detailed profile. Do not summarize away important nuances. Respond with JSON only.`;
 
     try {
       const response = await this.client.messages.create({
         model: "claude-opus-4-5-20251101",
         max_tokens: 16000,
+        temperature: 1, // Required for extended thinking
         thinking: {
           type: "enabled",
-          budget_tokens: 6000,
+          budget_tokens: 16000, // Maximum thinking for entity profiles
         },
         messages: [
           {
