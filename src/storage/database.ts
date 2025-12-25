@@ -45,6 +45,30 @@ export interface Relation {
   created_at: Date;
 }
 
+export interface Digest {
+  id: string;
+  content: string;
+  level: number; // 1 = session, 2 = topic, 3 = entity profile
+  topic: string | null;
+  entity_id: string | null;
+  source_count: number;
+  created_at: Date;
+  period_start: Date;
+  period_end: Date;
+}
+
+export interface Contradiction {
+  id: string;
+  entity_id: string | null;
+  memory_id_a: string;
+  memory_id_b: string;
+  description: string;
+  resolved: boolean;
+  resolution: string | null;
+  created_at: Date;
+  resolved_at: Date | null;
+}
+
 export class EngramDatabase {
   private db: Database.Database;
   private stmtCache: Map<string, Database.Statement> = new Map();
@@ -153,6 +177,54 @@ export class EngramDatabase {
       CREATE INDEX IF NOT EXISTS idx_relations_from ON relations(from_entity);
       CREATE INDEX IF NOT EXISTS idx_relations_to ON relations(to_entity);
       CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type);
+    `);
+
+    // Digests table (consolidated memories)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS digests (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        level INTEGER DEFAULT 1,
+        topic TEXT,
+        entity_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+        source_count INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        period_start DATETIME,
+        period_end DATETIME
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_digests_level ON digests(level);
+      CREATE INDEX IF NOT EXISTS idx_digests_entity ON digests(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_digests_period ON digests(period_start, period_end);
+    `);
+
+    // Digest sources (links digests to their source memories)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS digest_sources (
+        digest_id TEXT NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
+        memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+        PRIMARY KEY (digest_id, memory_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_digest_sources_memory ON digest_sources(memory_id);
+    `);
+
+    // Contradictions table (detected conflicts)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS contradictions (
+        id TEXT PRIMARY KEY,
+        entity_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+        memory_id_a TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+        memory_id_b TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+        description TEXT NOT NULL,
+        resolved INTEGER DEFAULT 0,
+        resolution TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        resolved_at DATETIME
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_contradictions_entity ON contradictions(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_contradictions_resolved ON contradictions(resolved);
     `);
   }
 
@@ -628,6 +700,157 @@ export class EngramDatabase {
     return { entities, relations: allRelations, observations };
   }
 
+  // ============ Digest Operations ============
+
+  createDigest(
+    content: string,
+    level: number,
+    sourceMemoryIds: string[],
+    options: {
+      topic?: string;
+      entityId?: string;
+      periodStart?: Date;
+      periodEnd?: Date;
+    } = {}
+  ): Digest {
+    const id = randomUUID();
+    const stmt = this.db.prepare(`
+      INSERT INTO digests (id, content, level, topic, entity_id, source_count, period_start, period_end)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      id,
+      content,
+      level,
+      options.topic || null,
+      options.entityId || null,
+      sourceMemoryIds.length,
+      options.periodStart?.toISOString() || null,
+      options.periodEnd?.toISOString() || null
+    );
+
+    // Link source memories
+    const linkStmt = this.db.prepare(
+      "INSERT OR IGNORE INTO digest_sources (digest_id, memory_id) VALUES (?, ?)"
+    );
+    for (const memoryId of sourceMemoryIds) {
+      linkStmt.run(id, memoryId);
+    }
+
+    return this.getDigest(id)!;
+  }
+
+  getDigest(id: string): Digest | null {
+    const row = this.stmt("SELECT * FROM digests WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? this.rowToDigest(row) : null;
+  }
+
+  getDigests(level?: number, limit: number = 100): Digest[] {
+    let sql = "SELECT * FROM digests";
+    const params: unknown[] = [];
+
+    if (level !== undefined) {
+      sql += " WHERE level = ?";
+      params.push(level);
+    }
+
+    sql += " ORDER BY created_at DESC LIMIT ?";
+    params.push(limit);
+
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToDigest(row));
+  }
+
+  getDigestSources(digestId: string): Memory[] {
+    const rows = this.stmt(`
+      SELECT m.* FROM memories m
+      JOIN digest_sources ds ON ds.memory_id = m.id
+      WHERE ds.digest_id = ?
+      ORDER BY m.timestamp DESC
+    `).all(digestId) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToMemory(row));
+  }
+
+  getUnconsolidatedMemories(since?: Date, limit: number = 100): Memory[] {
+    let sql = `
+      SELECT m.* FROM memories m
+      LEFT JOIN digest_sources ds ON ds.memory_id = m.id
+      WHERE ds.digest_id IS NULL
+    `;
+    const params: unknown[] = [];
+
+    if (since) {
+      sql += " AND m.timestamp >= ?";
+      params.push(since.toISOString());
+    }
+
+    sql += " ORDER BY m.timestamp DESC LIMIT ?";
+    params.push(limit);
+
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToMemory(row));
+  }
+
+  deleteDigest(id: string): boolean {
+    const stmt = this.db.prepare("DELETE FROM digests WHERE id = ?");
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
+  // ============ Contradiction Operations ============
+
+  createContradiction(
+    memoryIdA: string,
+    memoryIdB: string,
+    description: string,
+    entityId?: string
+  ): Contradiction {
+    const id = randomUUID();
+    const stmt = this.db.prepare(`
+      INSERT INTO contradictions (id, entity_id, memory_id_a, memory_id_b, description)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(id, entityId || null, memoryIdA, memoryIdB, description);
+    return this.getContradiction(id)!;
+  }
+
+  getContradiction(id: string): Contradiction | null {
+    const row = this.stmt("SELECT * FROM contradictions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? this.rowToContradiction(row) : null;
+  }
+
+  getContradictions(resolved?: boolean, limit: number = 100): Contradiction[] {
+    let sql = "SELECT * FROM contradictions";
+    const params: unknown[] = [];
+
+    if (resolved !== undefined) {
+      sql += " WHERE resolved = ?";
+      params.push(resolved ? 1 : 0);
+    }
+
+    sql += " ORDER BY created_at DESC LIMIT ?";
+    params.push(limit);
+
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToContradiction(row));
+  }
+
+  resolveContradiction(id: string, resolution: string): boolean {
+    const stmt = this.db.prepare(`
+      UPDATE contradictions
+      SET resolved = 1, resolution = ?, resolved_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    const result = stmt.run(resolution, id);
+    return result.changes > 0;
+  }
+
+  deleteContradiction(id: string): boolean {
+    const stmt = this.db.prepare("DELETE FROM contradictions WHERE id = ?");
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
   // ============ Statistics ============
 
   getStats(): {
@@ -635,15 +858,26 @@ export class EngramDatabase {
     entities: number;
     relations: number;
     observations: number;
+    digests: number;
+    contradictions: number;
   } {
-    // Single query for all stats - much faster than 4 separate queries
+    // Single query for all stats - much faster than separate queries
     const row = this.stmt(`
       SELECT
         (SELECT COUNT(*) FROM memories) as memories,
         (SELECT COUNT(*) FROM entities) as entities,
         (SELECT COUNT(*) FROM relations) as relations,
-        (SELECT COUNT(*) FROM observations) as observations
-    `).get() as { memories: number; entities: number; relations: number; observations: number };
+        (SELECT COUNT(*) FROM observations) as observations,
+        (SELECT COUNT(*) FROM digests) as digests,
+        (SELECT COUNT(*) FROM contradictions WHERE resolved = 0) as contradictions
+    `).get() as {
+      memories: number;
+      entities: number;
+      relations: number;
+      observations: number;
+      digests: number;
+      contradictions: number;
+    };
 
     return row;
   }
@@ -708,6 +942,34 @@ export class EngramDatabase {
       type: row.type as string,
       properties: row.properties ? JSON.parse(row.properties as string) : null,
       created_at: new Date(row.created_at as string),
+    };
+  }
+
+  private rowToDigest(row: Record<string, unknown>): Digest {
+    return {
+      id: row.id as string,
+      content: row.content as string,
+      level: row.level as number,
+      topic: row.topic as string | null,
+      entity_id: row.entity_id as string | null,
+      source_count: row.source_count as number,
+      created_at: new Date(row.created_at as string),
+      period_start: row.period_start ? new Date(row.period_start as string) : new Date(),
+      period_end: row.period_end ? new Date(row.period_end as string) : new Date(),
+    };
+  }
+
+  private rowToContradiction(row: Record<string, unknown>): Contradiction {
+    return {
+      id: row.id as string,
+      entity_id: row.entity_id as string | null,
+      memory_id_a: row.memory_id_a as string,
+      memory_id_b: row.memory_id_b as string,
+      description: row.description as string,
+      resolved: Boolean(row.resolved),
+      resolution: row.resolution as string | null,
+      created_at: new Date(row.created_at as string),
+      resolved_at: row.resolved_at ? new Date(row.resolved_at as string) : null,
     };
   }
 }

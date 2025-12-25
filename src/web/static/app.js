@@ -14,6 +14,7 @@ const views = {
   memories: document.getElementById('memories-view'),
   entities: document.getElementById('entities-view'),
   graph: document.getElementById('graph-view'),
+  consolidation: document.getElementById('consolidation-view'),
 };
 
 const statsEl = document.getElementById('stats');
@@ -61,7 +62,14 @@ function formatDate(dateStr) {
 // Load stats
 async function loadStats() {
   const stats = await api('/api/stats');
-  statsEl.textContent = `${stats.memories} memories \u00b7 ${stats.entities} entities \u00b7 ${stats.relations} relations`;
+  let text = `${stats.memories} memories \u00b7 ${stats.entities} entities \u00b7 ${stats.relations} relations`;
+  if (stats.digests > 0) {
+    text += ` \u00b7 ${stats.digests} digests`;
+  }
+  if (stats.contradictions > 0) {
+    text += ` \u00b7 ${stats.contradictions} contradictions`;
+  }
+  statsEl.textContent = text;
 }
 
 // Load memories
@@ -308,7 +316,212 @@ function switchView(view) {
   if (view === 'memories') loadMemories(searchInput.value);
   if (view === 'entities') loadEntities(entityTypeFilter.value);
   if (view === 'graph') loadGraph();
+  if (view === 'consolidation') loadConsolidation();
 }
+
+// ============ Consolidation ============
+
+const contradictionsList = document.getElementById('contradictions-list');
+const digestsList = document.getElementById('digests-list');
+const unconsolidatedCount = document.getElementById('unconsolidated-count');
+const digestsCount = document.getElementById('digests-count');
+const contradictionsCount = document.getElementById('contradictions-count');
+const runConsolidationBtn = document.getElementById('run-consolidation-btn');
+const contradictionModal = document.getElementById('contradiction-modal');
+const contradictionModalBody = document.getElementById('contradiction-modal-body');
+const contradictionForm = document.getElementById('contradiction-form');
+const contradictionResolution = document.getElementById('contradiction-resolution');
+
+let currentContradictionId = null;
+
+// Load consolidation view
+async function loadConsolidation() {
+  await Promise.all([
+    loadConsolidationStatus(),
+    loadContradictions(),
+    loadDigests(),
+  ]);
+}
+
+// Load consolidation status
+async function loadConsolidationStatus() {
+  try {
+    const status = await api('/api/consolidation/status');
+    unconsolidatedCount.textContent = status.unconsolidatedMemories;
+    digestsCount.textContent = status.totalDigests;
+    contradictionsCount.textContent = status.unresolvedContradictions;
+    runConsolidationBtn.disabled = !status.configured;
+    if (!status.configured) {
+      runConsolidationBtn.title = 'Set ANTHROPIC_API_KEY to enable';
+    }
+  } catch (e) {
+    console.error('Failed to load consolidation status', e);
+  }
+}
+
+// Load contradictions
+async function loadContradictions() {
+  try {
+    const data = await api('/api/contradictions?resolved=false');
+
+    if (data.contradictions.length === 0) {
+      contradictionsList.innerHTML = '<div class="empty-state">No contradictions found</div>';
+      return;
+    }
+
+    contradictionsList.innerHTML = data.contradictions.map(c => `
+      <div class="list-item contradiction-item" data-id="${c.id}">
+        ${c.entity ? `<span class="entity-tag">${escapeHtml(c.entity.name)}</span>` : ''}
+        <div class="description">${escapeHtml(c.description)}</div>
+        <div class="memories">
+          <div class="memory-quote">
+            ${escapeHtml(c.memory_a?.content || 'Memory deleted')}
+            <span class="date">${c.memory_a ? formatDate(c.memory_a.timestamp) : ''}</span>
+          </div>
+          <div class="memory-quote">
+            ${escapeHtml(c.memory_b?.content || 'Memory deleted')}
+            <span class="date">${c.memory_b ? formatDate(c.memory_b.timestamp) : ''}</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="resolve-btn" data-id="${c.id}">Resolve</button>
+        </div>
+      </div>
+    `).join('');
+
+    // Attach event listeners
+    contradictionsList.querySelectorAll('.resolve-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openContradictionModal(btn.dataset.id);
+      });
+    });
+  } catch (e) {
+    console.error('Failed to load contradictions', e);
+    contradictionsList.innerHTML = '<div class="empty-state">Failed to load contradictions</div>';
+  }
+}
+
+// Load digests
+async function loadDigests() {
+  try {
+    const data = await api('/api/digests');
+
+    if (data.digests.length === 0) {
+      digestsList.innerHTML = '<div class="empty-state">No digests yet. Run consolidation to create summaries.</div>';
+      return;
+    }
+
+    digestsList.innerHTML = data.digests.map(d => `
+      <div class="list-item digest-item">
+        <div class="content">${escapeHtml(d.content)}</div>
+        <div class="meta">
+          ${d.topic ? `<span class="topic">${escapeHtml(d.topic)}</span>` : ''}
+          <span>Level ${d.level}</span>
+          <span>${d.source_count} memories</span>
+          <span>${formatDate(d.created_at)}</span>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('Failed to load digests', e);
+    digestsList.innerHTML = '<div class="empty-state">Failed to load digests</div>';
+  }
+}
+
+// Run consolidation
+async function runConsolidation() {
+  runConsolidationBtn.disabled = true;
+  runConsolidationBtn.textContent = 'Consolidating...';
+
+  try {
+    const result = await api('/api/consolidation/run', { method: 'POST' });
+    alert(`Consolidation complete!\n\nDigests created: ${result.digestsCreated}\nContradictions found: ${result.contradictionsFound}\nMemories processed: ${result.memoriesProcessed}`);
+    await loadConsolidation();
+  } catch (e) {
+    console.error('Consolidation failed', e);
+    alert('Consolidation failed. Check console for details.');
+  } finally {
+    runConsolidationBtn.disabled = false;
+    runConsolidationBtn.textContent = 'Run Consolidation';
+  }
+}
+
+// Open contradiction modal
+function openContradictionModal(id) {
+  const item = contradictionsList.querySelector(`[data-id="${id}"]`);
+  if (!item) return;
+
+  currentContradictionId = id;
+
+  // Copy the memories to the modal
+  const description = item.querySelector('.description').textContent;
+  const memories = item.querySelectorAll('.memory-quote');
+
+  contradictionModalBody.innerHTML = `
+    <p><strong>${escapeHtml(description)}</strong></p>
+    <div class="memory-quote">${memories[0].innerHTML}</div>
+    <div class="memory-quote">${memories[1].innerHTML}</div>
+  `;
+
+  contradictionResolution.value = '';
+  contradictionModal.classList.remove('hidden');
+}
+
+// Close contradiction modal
+function closeContradictionModal() {
+  contradictionModal.classList.add('hidden');
+  currentContradictionId = null;
+}
+
+// Resolve contradiction
+async function resolveContradiction(resolution) {
+  if (!currentContradictionId || !resolution.trim()) return;
+
+  try {
+    await api(`/api/contradictions/${currentContradictionId}/resolve`, {
+      method: 'POST',
+      body: { resolution: resolution.trim() },
+    });
+    closeContradictionModal();
+    await loadConsolidation();
+    await loadStats();
+  } catch (e) {
+    console.error('Failed to resolve contradiction', e);
+    alert('Failed to resolve contradiction');
+  }
+}
+
+// Dismiss contradiction
+async function dismissContradiction() {
+  if (!currentContradictionId) return;
+  if (!confirm('Dismiss this contradiction without resolution?')) return;
+
+  try {
+    await api(`/api/contradictions/${currentContradictionId}`, { method: 'DELETE' });
+    closeContradictionModal();
+    await loadConsolidation();
+    await loadStats();
+  } catch (e) {
+    console.error('Failed to dismiss contradiction', e);
+    alert('Failed to dismiss contradiction');
+  }
+}
+
+// Event listeners for consolidation
+runConsolidationBtn.addEventListener('click', runConsolidation);
+
+contradictionForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  resolveContradiction(contradictionResolution.value);
+});
+
+document.getElementById('contradiction-cancel').addEventListener('click', closeContradictionModal);
+document.getElementById('contradiction-dismiss').addEventListener('click', dismissContradiction);
+
+contradictionModal.addEventListener('click', (e) => {
+  if (e.target === contradictionModal) closeContradictionModal();
+});
 
 // Event listeners
 document.querySelectorAll('.nav-btn').forEach(btn => {

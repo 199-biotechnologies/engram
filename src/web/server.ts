@@ -11,6 +11,7 @@ import { EngramDatabase } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
 import { ChatHandler } from "./chat-handler.js";
+import { Consolidator } from "../consolidation/consolidator.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,6 +40,7 @@ export class EngramWebServer {
   private graph: KnowledgeGraph;
   private search: HybridSearch;
   private chat: ChatHandler;
+  private consolidator: Consolidator;
   private port: number;
 
   constructor(options: WebServerOptions) {
@@ -50,6 +52,7 @@ export class EngramWebServer {
       graph: options.graph,
       search: options.search,
     });
+    this.consolidator = new Consolidator(options.db);
     this.port = options.port || 3847;
   }
 
@@ -301,6 +304,108 @@ export class EngramWebServer {
     if (pathname === "/api/chat/clear" && method === "POST") {
       this.chat.clearHistory();
       res.end(JSON.stringify({ success: true }));
+      return;
+    }
+
+    // ============ Consolidation Endpoints ============
+
+    // GET /api/consolidation/status - get consolidation status
+    if (pathname === "/api/consolidation/status" && method === "GET") {
+      const status = this.consolidator.getStatus();
+      res.end(JSON.stringify(status));
+      return;
+    }
+
+    // POST /api/consolidation/run - run consolidation
+    if (pathname === "/api/consolidation/run" && method === "POST") {
+      if (!this.consolidator.isConfigured()) {
+        res.writeHead(503);
+        res.end(JSON.stringify({
+          error: "Consolidation not available - set ANTHROPIC_API_KEY",
+        }));
+        return;
+      }
+
+      try {
+        const result = await this.consolidator.consolidate();
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        res.writeHead(500);
+        res.end(JSON.stringify({
+          error: error instanceof Error ? error.message : "Consolidation failed",
+        }));
+      }
+      return;
+    }
+
+    // GET /api/digests - list all digests
+    if (pathname === "/api/digests" && method === "GET") {
+      const level = url.searchParams.get("level");
+      const limit = parseInt(url.searchParams.get("limit") || "100");
+      const digests = this.db.getDigests(
+        level ? parseInt(level) : undefined,
+        limit
+      );
+      res.end(JSON.stringify({ digests }));
+      return;
+    }
+
+    // GET /api/digests/:id/sources - get source memories for a digest
+    const digestSourcesMatch = pathname.match(/^\/api\/digests\/([a-f0-9-]+)\/sources$/);
+    if (digestSourcesMatch && method === "GET") {
+      const id = digestSourcesMatch[1];
+      const sources = this.db.getDigestSources(id);
+      res.end(JSON.stringify({ sources }));
+      return;
+    }
+
+    // GET /api/contradictions - list contradictions
+    if (pathname === "/api/contradictions" && method === "GET") {
+      const resolved = url.searchParams.get("resolved");
+      const limit = parseInt(url.searchParams.get("limit") || "100");
+      const contradictions = this.db.getContradictions(
+        resolved !== null ? resolved === "true" : undefined,
+        limit
+      );
+
+      // Enrich with memory content
+      const enriched = contradictions.map((c) => {
+        const memA = this.db.getMemory(c.memory_id_a);
+        const memB = this.db.getMemory(c.memory_id_b);
+        const entity = c.entity_id ? this.db.getEntity(c.entity_id) : null;
+        return {
+          ...c,
+          memory_a: memA,
+          memory_b: memB,
+          entity: entity,
+        };
+      });
+
+      res.end(JSON.stringify({ contradictions: enriched }));
+      return;
+    }
+
+    // POST /api/contradictions/:id/resolve - resolve a contradiction
+    const resolveMatch = pathname.match(/^\/api\/contradictions\/([a-f0-9-]+)\/resolve$/);
+    if (resolveMatch && method === "POST") {
+      const id = resolveMatch[1];
+      const { resolution } = body as { resolution: string };
+      if (!resolution) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "Resolution is required" }));
+        return;
+      }
+      const success = this.db.resolveContradiction(id, resolution);
+      res.end(JSON.stringify({ success }));
+      return;
+    }
+
+    // DELETE /api/contradictions/:id - dismiss a contradiction
+    const contradictionMatch = pathname.match(/^\/api\/contradictions\/([a-f0-9-]+)$/);
+    if (contradictionMatch && method === "DELETE") {
+      const id = contradictionMatch[1];
+      const success = this.db.deleteContradiction(id);
+      res.end(JSON.stringify({ success }));
       return;
     }
 

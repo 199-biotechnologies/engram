@@ -13,6 +13,7 @@
       <button class="nav-btn active" data-view="memories">Memories</button>
       <button class="nav-btn" data-view="entities">Entities</button>
       <button class="nav-btn" data-view="graph">Graph</button>
+      <button class="nav-btn" data-view="consolidation">Consolidation</button>
     </nav>
     <div class="stats" id="stats"></div>
     <button id="chat-toggle" class="chat-toggle" title="Open Chat Assistant">Chat</button>
@@ -53,6 +54,32 @@
     <section id="graph-view" class="view">
       <div id="graph-container"></div>
     </section>
+
+    <!-- Consolidation View -->
+    <section id="consolidation-view" class="view">
+      <div class="consolidation-header">
+        <div class="consolidation-status" id="consolidation-status">
+          <span class="status-item"><strong>Unconsolidated:</strong> <span id="unconsolidated-count">-</span></span>
+          <span class="status-item"><strong>Digests:</strong> <span id="digests-count">-</span></span>
+          <span class="status-item"><strong>Contradictions:</strong> <span id="contradictions-count">-</span></span>
+        </div>
+        <button id="run-consolidation-btn">Run Consolidation</button>
+      </div>
+
+      <div class="consolidation-sections">
+        <div class="section">
+          <h2>Contradictions</h2>
+          <p class="section-desc">Conflicting information detected during consolidation. Review and resolve.</p>
+          <div id="contradictions-list" class="list"></div>
+        </div>
+
+        <div class="section">
+          <h2>Digests</h2>
+          <p class="section-desc">Consolidated summaries of your memories.</p>
+          <div id="digests-list" class="list"></div>
+        </div>
+      </div>
+    </section>
   </main>
 
   <!-- Modal for adding/editing -->
@@ -88,6 +115,25 @@
       <div class="modal-actions">
         <button type="button" id="entity-modal-close">Close</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Contradiction Resolution Modal -->
+  <div id="contradiction-modal" class="modal hidden">
+    <div class="modal-content modal-wide">
+      <h2>Resolve Contradiction</h2>
+      <div id="contradiction-modal-body"></div>
+      <form id="contradiction-form">
+        <label>
+          Resolution:
+          <textarea id="contradiction-resolution" placeholder="Explain how you resolved this contradiction..." rows="3"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="contradiction-dismiss">Dismiss</button>
+          <button type="button" id="contradiction-cancel">Cancel</button>
+          <button type="submit">Resolve</button>
+        </div>
+      </form>
     </div>
   </div>
 

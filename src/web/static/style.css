@@ -638,6 +638,199 @@ body.chat-open main {
   margin-right: 400px;
 }
 
+/* Consolidation View */
+.consolidation-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding: 1rem 1.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.consolidation-status {
+  display: flex;
+  gap: 2rem;
+  font-size: 0.9375rem;
+}
+
+.status-item {
+  color: var(--text-secondary);
+}
+
+.status-item strong {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+#run-consolidation-btn {
+  background: var(--accent);
+}
+
+#run-consolidation-btn:hover {
+  background: var(--accent-hover);
+}
+
+#run-consolidation-btn:disabled {
+  background: var(--text-muted);
+}
+
+.consolidation-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.consolidation-sections .section h2 {
+  margin-bottom: 0.5rem;
+}
+
+.section-desc {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+}
+
+/* Contradiction item */
+.contradiction-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  padding: 1.25rem 1.5rem;
+}
+
+.contradiction-item .description {
+  font-size: 1rem;
+  line-height: 1.6;
+  margin-bottom: 1rem;
+  font-weight: 500;
+}
+
+.contradiction-item .memories {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.contradiction-item .memory-quote {
+  padding: 0.75rem 1rem;
+  background: var(--bg-tertiary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.contradiction-item .memory-quote .date {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.375rem;
+}
+
+.contradiction-item .entity-tag {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.contradiction-item .actions {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.contradiction-item .actions button {
+  font-size: 0.8125rem;
+  padding: 0.5rem 1rem;
+  background: var(--text-primary);
+  color: var(--bg-primary);
+}
+
+/* Digest item */
+.digest-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  padding: 1.25rem 1.5rem;
+}
+
+.digest-item .content {
+  font-size: 1rem;
+  line-height: 1.7;
+  margin-bottom: 1rem;
+}
+
+.digest-item .meta {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.digest-item .topic {
+  font-weight: 500;
+  color: var(--accent);
+}
+
+/* Modal wide */
+.modal-wide {
+  max-width: 800px;
+}
+
+.modal-wide .memory-quote {
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--border);
+}
+
+.modal-wide .memory-quote .date {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.375rem;
+}
+
+.modal-wide label {
+  display: block;
+  margin-top: 1.5rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.modal-wide textarea {
+  width: 100%;
+  margin-top: 0.5rem;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  resize: vertical;
+}
+
+.modal-wide textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#contradiction-dismiss {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  margin-right: auto;
+}
+
+#contradiction-dismiss:hover {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
 /* Responsive */
 @media (max-width: 640px) {
   header {
