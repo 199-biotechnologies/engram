@@ -20,6 +20,7 @@ import { KnowledgeGraph } from "./graph/knowledge-graph.js";
 import { createRetriever } from "./retrieval/colbert.js";
 import { HybridSearch } from "./retrieval/hybrid.js";
 import { EngramWebServer } from "./web/server.js";
+import { Consolidator } from "./consolidation/consolidator.js";
 
 // ============ Configuration ============
 
@@ -34,6 +35,7 @@ const DB_FILE = path.join(DB_PATH, "engram.db");
 let db: EngramDatabase;
 let graph: KnowledgeGraph;
 let search: HybridSearch;
+let consolidator: Consolidator;
 let webServer: EngramWebServer | null = null;
 
 async function initialize(): Promise<void> {
@@ -44,6 +46,7 @@ async function initialize(): Promise<void> {
 
   const retriever = await createRetriever(DB_PATH);
   search = new HybridSearch(db, graph, retriever);
+  consolidator = new Consolidator(db, graph, search);
 
   // Rebuild index with existing memories
   const stats = db.getStats();
@@ -53,6 +56,9 @@ async function initialize(): Promise<void> {
   }
 
   console.error(`[Engram] Ready. Stats: ${JSON.stringify(stats)}`);
+  if (consolidator.isConfigured()) {
+    console.error(`[Engram] Consolidation enabled (ANTHROPIC_API_KEY found)`);
+  }
 }
 
 // ============ MCP Server ============
@@ -60,7 +66,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.5.1",
+    version: "0.6.0",
   },
   {
     capabilities: {
@@ -89,6 +95,17 @@ const TOOLS = [
           minimum: 0,
           maximum: 1,
           default: 0.5,
+        },
+        emotional_weight: {
+          type: "number",
+          description: "0-1 emotional significance. Use 0.8+ for emotionally charged content, celebrations, losses. Affects memory retention.",
+          minimum: 0,
+          maximum: 1,
+          default: 0.5,
+        },
+        event_time: {
+          type: "string",
+          description: "When the event actually happened (ISO 8601), if different from now. E.g., 'Last week I went to Paris' → set event_time to that date.",
         },
         entities: {
           type: "array",
@@ -200,6 +217,28 @@ const TOOLS = [
       openWorldHint: true,
     },
   },
+  {
+    name: "consolidate",
+    description: "Run memory consolidation to compress episodes into memories and memories into digests. Like sleep for the memory system. Use periodically or when requested.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["full", "episodes_only", "memories_only"],
+          description: "What to consolidate: 'full' (default) runs everything, 'episodes_only' just processes conversation history, 'memories_only' creates digests",
+          default: "full",
+        },
+      },
+    },
+    annotations: {
+      title: "Consolidate Memories",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
 ];
 
 // List available tools
@@ -218,18 +257,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content,
           source = "conversation",
           importance = 0.5,
+          emotional_weight = 0.5,
+          event_time,
           entities: providedEntities = [],
           relationships: providedRelationships = [],
         } = args as {
           content: string;
           source?: string;
           importance?: number;
+          emotional_weight?: number;
+          event_time?: string;
           entities?: Array<{ name: string; type: "person" | "organization" | "place" }>;
           relationships?: Array<{ from: string; to: string; type: string }>;
         };
 
-        // Create memory
-        const memory = db.createMemory(content, source, importance);
+        // Create memory with new temporal and salience fields
+        const memory = db.createMemory(content, source, importance, {
+          eventTime: event_time ? new Date(event_time) : undefined,
+          emotionalWeight: emotional_weight,
+        });
 
         // Index for semantic search
         await search.indexMemory(memory);
@@ -290,6 +336,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           source: r.memory.source,
           timestamp: r.memory.timestamp.toISOString(),
           relevance_score: r.score.toFixed(4),
+          retention: r.retention.toFixed(2),  // How well-retained (0-1)
           matched_via: Object.entries(r.sources)
             .filter(([, v]) => v !== undefined)
             .map(([k]) => k)
@@ -359,6 +406,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 success: true,
                 url,
                 message: `Web interface running at ${url}`,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "consolidate": {
+        const { mode = "full" } = args as { mode?: "full" | "episodes_only" | "memories_only" };
+
+        if (!consolidator.isConfigured()) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: false,
+                  error: "Consolidation requires ANTHROPIC_API_KEY environment variable",
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        let result;
+        switch (mode) {
+          case "episodes_only":
+            result = await consolidator.consolidateEpisodes();
+            break;
+          case "memories_only":
+            result = await consolidator.consolidate();
+            break;
+          case "full":
+          default:
+            result = await consolidator.runSleepCycle();
+            break;
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                success: true,
+                mode,
+                ...result,
               }, null, 2),
             },
           ],

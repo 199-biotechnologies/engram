@@ -12,7 +12,9 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { EngramDatabase, Memory, Digest } from "../storage/database.js";
+import { EngramDatabase, Memory, Digest, Episode } from "../storage/database.js";
+import { KnowledgeGraph } from "../graph/knowledge-graph.js";
+import { HybridSearch } from "../retrieval/hybrid.js";
 
 const CONSOLIDATION_SYSTEM = `You are a high-quality memory consolidation system for a personal AI assistant. Your goal is to create comprehensive, nuanced digests that preserve the richness of human experience and relationships.
 
@@ -49,6 +51,37 @@ const CONSOLIDATION_SYSTEM = `You are a high-quality memory consolidation system
 - If memories span different time periods, note the evolution
 - Only flag true contradictions, not incomplete information or natural life changes`;
 
+const EPISODE_EXTRACTION_SYSTEM = `You are extracting structured memories from a conversation. Your goal is to identify facts, preferences, events, and relationships worth remembering.
+
+## What to Extract
+- Key facts about people, places, organizations
+- User preferences and opinions
+- Important events and their dates
+- Relationships between entities
+- Decisions made or plans discussed
+
+## What to Skip
+- Small talk and pleasantries
+- Repetitive information
+- Context that's only relevant to the immediate task
+- Technical details that don't reveal user preferences
+
+## Output Format (JSON)
+{
+  "memories": [
+    {
+      "content": "The actual memory to store (clear, standalone statement)",
+      "importance": 0.5,
+      "emotional_weight": 0.5,
+      "event_time": "2024-12-01 or null if not mentioned",
+      "entities": [{"name": "Boris", "type": "person"}],
+      "relationships": [{"from": "Boris", "to": "Google", "type": "works_at"}]
+    }
+  ]
+}
+
+Extract 0-5 memories. Quality over quantity. If nothing worth remembering, return empty memories array.`;
+
 interface ConsolidationResult {
   digest: string;
   topic: string;
@@ -56,6 +89,19 @@ interface ConsolidationResult {
     description: string;
     memory_ids: string[];
   }>;
+}
+
+interface ExtractedMemory {
+  content: string;
+  importance: number;
+  emotional_weight: number;
+  event_time: string | null;
+  entities: Array<{ name: string; type: string }>;
+  relationships: Array<{ from: string; to: string; type: string }>;
+}
+
+interface EpisodeExtractionResult {
+  memories: ExtractedMemory[];
 }
 
 interface ConsolidateOptions {
@@ -66,9 +112,17 @@ interface ConsolidateOptions {
 export class Consolidator {
   private client: Anthropic | null = null;
   private db: EngramDatabase;
+  private graph: KnowledgeGraph | null = null;
+  private search: HybridSearch | null = null;
 
-  constructor(db: EngramDatabase) {
+  constructor(
+    db: EngramDatabase,
+    graph?: KnowledgeGraph,
+    search?: HybridSearch
+  ) {
     this.db = db;
+    this.graph = graph || null;
+    this.search = search || null;
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (apiKey) {
@@ -359,18 +413,204 @@ Create a rich, detailed profile. Do not summarize away important nuances. Respon
   getStatus(): {
     configured: boolean;
     unconsolidatedMemories: number;
+    unconsolidatedEpisodes: number;
     totalDigests: number;
     unresolvedContradictions: number;
   } {
-    const unconsolidated = this.db.getUnconsolidatedMemories(undefined, 1000);
+    const unconsolidatedMem = this.db.getUnconsolidatedMemories(undefined, 1000);
+    const unconsolidatedEp = this.db.getUnconsolidatedEpisodes(1000);
     const digests = this.db.getDigests(undefined, 1000);
     const contradictions = this.db.getContradictions(false, 1000);
 
     return {
       configured: this.isConfigured(),
-      unconsolidatedMemories: unconsolidated.length,
+      unconsolidatedMemories: unconsolidatedMem.length,
+      unconsolidatedEpisodes: unconsolidatedEp.length,
       totalDigests: digests.length,
       unresolvedContradictions: contradictions.length,
+    };
+  }
+
+  /**
+   * Process unconsolidated episodes into memories
+   * This is the "working memory → long-term memory" transfer
+   */
+  async consolidateEpisodes(options: {
+    minEpisodes?: number;
+    batchSize?: number;
+  } = {}): Promise<{
+    episodesProcessed: number;
+    memoriesCreated: number;
+    entitiesCreated: number;
+  }> {
+    if (!this.client) {
+      throw new Error("Consolidator not configured - set ANTHROPIC_API_KEY");
+    }
+
+    const { minEpisodes = 4, batchSize = 20 } = options;
+
+    // Get unconsolidated episodes
+    const episodes = this.db.getUnconsolidatedEpisodes(batchSize);
+
+    if (episodes.length < minEpisodes) {
+      return { episodesProcessed: 0, memoriesCreated: 0, entitiesCreated: 0 };
+    }
+
+    // Group by session for context
+    const sessionGroups = new Map<string, Episode[]>();
+    for (const ep of episodes) {
+      const existing = sessionGroups.get(ep.session_id) || [];
+      existing.push(ep);
+      sessionGroups.set(ep.session_id, existing);
+    }
+
+    let episodesProcessed = 0;
+    let memoriesCreated = 0;
+    let entitiesCreated = 0;
+
+    // Process each session
+    for (const [sessionId, sessionEpisodes] of sessionGroups) {
+      if (sessionEpisodes.length < 2) continue;
+
+      try {
+        const result = await this.extractMemoriesFromEpisodes(sessionEpisodes);
+
+        if (result && result.memories.length > 0) {
+          for (const mem of result.memories) {
+            // Create the memory
+            const memory = this.db.createMemory(
+              mem.content,
+              "episode_consolidation",
+              mem.importance,
+              {
+                eventTime: mem.event_time ? new Date(mem.event_time) : undefined,
+                emotionalWeight: mem.emotional_weight,
+              }
+            );
+            memoriesCreated++;
+
+            // Index for search
+            if (this.search) {
+              await this.search.indexMemory(memory);
+            }
+
+            // Create entities and relationships
+            if (this.graph) {
+              for (const ent of mem.entities || []) {
+                const entity = this.graph.getOrCreateEntity(
+                  ent.name,
+                  ent.type as "person" | "place" | "concept" | "event" | "organization"
+                );
+                this.db.addObservation(entity.id, mem.content, memory.id, 1.0);
+                entitiesCreated++;
+              }
+
+              for (const rel of mem.relationships || []) {
+                try {
+                  const fromEntity = this.graph.getOrCreateEntity(rel.from, "person");
+                  const toEntity = this.graph.getOrCreateEntity(rel.to, "person");
+                  this.graph.relate(fromEntity.name, toEntity.name, rel.type);
+                } catch {
+                  // Skip invalid relationships
+                }
+              }
+            }
+          }
+        }
+
+        // Mark episodes as consolidated
+        this.db.markEpisodesConsolidated(sessionEpisodes.map(e => e.id));
+        episodesProcessed += sessionEpisodes.length;
+
+      } catch (error) {
+        console.error("[Consolidator] Episode consolidation failed:", error);
+      }
+    }
+
+    return { episodesProcessed, memoriesCreated, entitiesCreated };
+  }
+
+  /**
+   * Extract memories from conversation episodes using Haiku (fast, cheap)
+   */
+  private async extractMemoriesFromEpisodes(
+    episodes: Episode[]
+  ): Promise<EpisodeExtractionResult | null> {
+    if (!this.client) return null;
+
+    // Format conversation
+    const conversationText = episodes
+      .sort((a, b) => a.turn_index - b.turn_index)
+      .map(ep => `${ep.role.toUpperCase()}: ${ep.content}`)
+      .join("\n\n");
+
+    const userPrompt = `Extract memorable facts from this conversation.
+
+CONVERSATION:
+${conversationText}
+
+Remember: Only extract information worth remembering long-term. Skip transient task details.
+Respond with JSON only.`;
+
+    try {
+      // Use Haiku for speed/cost (no extended thinking needed)
+      const response = await this.client.messages.create({
+        model: "claude-haiku-4-5-20251201",
+        max_tokens: 4000,
+        messages: [
+          {
+            role: "user",
+            content: userPrompt,
+          },
+        ],
+        system: EPISODE_EXTRACTION_SYSTEM,
+      });
+
+      let text = "";
+      for (const block of response.content) {
+        if (block.type === "text") {
+          text = block.text;
+          break;
+        }
+      }
+
+      if (!text) return null;
+
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return null;
+
+      return JSON.parse(jsonMatch[0]) as EpisodeExtractionResult;
+    } catch (error) {
+      console.error("[Consolidator] Episode extraction failed:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Run full consolidation cycle (episodes → memories → digests)
+   * This is the "sleep cycle" that should run periodically
+   */
+  async runSleepCycle(): Promise<{
+    episodesProcessed: number;
+    memoriesCreated: number;
+    digestsCreated: number;
+    contradictionsFound: number;
+  }> {
+    console.error("[Consolidator] Starting sleep cycle...");
+
+    // Step 1: Process episodes into memories
+    const episodeResult = await this.consolidateEpisodes();
+    console.error(`[Consolidator] Episodes: ${episodeResult.episodesProcessed} → ${episodeResult.memoriesCreated} memories`);
+
+    // Step 2: Consolidate memories into digests
+    const memoryResult = await this.consolidate();
+    console.error(`[Consolidator] Memories: ${memoryResult.memoriesProcessed} → ${memoryResult.digestsCreated} digests`);
+
+    return {
+      episodesProcessed: episodeResult.episodesProcessed,
+      memoriesCreated: episodeResult.memoriesCreated,
+      digestsCreated: memoryResult.digestsCreated,
+      contradictionsFound: memoryResult.contradictionsFound,
     };
   }
 }

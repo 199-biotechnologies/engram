@@ -12,10 +12,27 @@ export interface Memory {
   id: string;
   content: string;
   source: string;
-  timestamp: Date;
+  timestamp: Date;           // ingestion_time: when we learned this
+  event_time: Date | null;   // when the event actually happened (bi-temporal)
   importance: number;
   access_count: number;
   last_accessed: Date | null;
+  stability: number;         // Ebbinghaus stability score (increases with recalls)
+  emotional_weight: number;  // Salience: emotional significance 0-1
+}
+
+/**
+ * Episode: Raw conversation turns (hippocampal buffer)
+ * These are the sensory/working memory before consolidation into semantic memory
+ */
+export interface Episode {
+  id: string;
+  session_id: string;        // Groups conversation turns
+  turn_index: number;        // Order within session
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
+  consolidated: boolean;     // Has this been processed into memories?
 }
 
 export interface Entity {
@@ -94,21 +111,45 @@ export class EngramDatabase {
   }
 
   private initialize(): void {
-    // Memories table
+    // Memories table (Semantic Memory - neocortex analog)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
         content TEXT NOT NULL,
         source TEXT DEFAULT 'conversation',
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        event_time DATETIME,
         importance REAL DEFAULT 0.5,
         access_count INTEGER DEFAULT 0,
-        last_accessed DATETIME
+        last_accessed DATETIME,
+        stability REAL DEFAULT 1.0,
+        emotional_weight REAL DEFAULT 0.5
       );
 
       CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
       CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
+      CREATE INDEX IF NOT EXISTS idx_memories_event_time ON memories(event_time);
     `);
+
+    // Episodes table (Episodic Memory - hippocampal buffer)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS episodes (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        turn_index INTEGER DEFAULT 0,
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        consolidated INTEGER DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
+      CREATE INDEX IF NOT EXISTS idx_episodes_consolidated ON episodes(consolidated);
+      CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp);
+    `);
+
+    // Migrate existing tables: add new columns if they don't exist
+    this.migrateSchema();
 
     // FTS5 for BM25 search
     this.db.exec(`
@@ -228,19 +269,50 @@ export class EngramDatabase {
     `);
   }
 
+  /**
+   * Add new columns to existing tables for seamless upgrades
+   */
+  private migrateSchema(): void {
+    // Check and add new memory columns
+    const memoryInfo = this.db.pragma("table_info(memories)") as Array<{ name: string }>;
+    const memoryColumns = new Set(memoryInfo.map(c => c.name));
+
+    if (!memoryColumns.has("event_time")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN event_time DATETIME");
+    }
+    if (!memoryColumns.has("stability")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN stability REAL DEFAULT 1.0");
+    }
+    if (!memoryColumns.has("emotional_weight")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN emotional_weight REAL DEFAULT 0.5");
+    }
+  }
+
   // ============ Memory Operations ============
 
   createMemory(
     content: string,
     source: string = "conversation",
-    importance: number = 0.5
+    importance: number = 0.5,
+    options: {
+      eventTime?: Date;
+      emotionalWeight?: number;
+    } = {}
   ): Memory {
     const id = randomUUID();
     const stmt = this.db.prepare(`
-      INSERT INTO memories (id, content, source, importance)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO memories (id, content, source, importance, event_time, emotional_weight, stability)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(id, content, source, importance);
+    stmt.run(
+      id,
+      content,
+      source,
+      importance,
+      options.eventTime?.toISOString() || null,
+      options.emotionalWeight ?? 0.5,
+      1.0  // Initial stability
+    );
     return this.getMemory(id)!;
   }
 
@@ -276,13 +348,121 @@ export class EngramDatabase {
     return result.changes > 0;
   }
 
+  /**
+   * Record a memory access - increases access_count and stability
+   * Each recall strengthens the memory (Ebbinghaus spacing effect)
+   */
   touchMemory(id: string): void {
-    this.stmt(`UPDATE memories SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP WHERE id = ?`).run(id);
+    // Stability increases with each access: S_new = S_old * 1.2 (capped at 10)
+    this.stmt(`
+      UPDATE memories
+      SET access_count = access_count + 1,
+          last_accessed = CURRENT_TIMESTAMP,
+          stability = MIN(stability * 1.2, 10.0)
+      WHERE id = ?
+    `).run(id);
   }
 
   getAllMemories(limit: number = 1000): Memory[] {
     const rows = this.stmt("SELECT * FROM memories ORDER BY timestamp DESC LIMIT ?").all(limit) as Record<string, unknown>[];
     return rows.map((row) => this.rowToMemory(row));
+  }
+
+  // ============ Episode Operations (Raw Conversations) ============
+
+  /**
+   * Store a conversation turn for later consolidation
+   */
+  createEpisode(
+    sessionId: string,
+    role: "user" | "assistant",
+    content: string,
+    turnIndex?: number
+  ): Episode {
+    const id = randomUUID();
+
+    // Auto-calculate turn index if not provided
+    const actualTurnIndex = turnIndex ?? this.getNextTurnIndex(sessionId);
+
+    const stmt = this.db.prepare(`
+      INSERT INTO episodes (id, session_id, turn_index, role, content)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(id, sessionId, actualTurnIndex, role, content);
+    return this.getEpisode(id)!;
+  }
+
+  getEpisode(id: string): Episode | null {
+    const row = this.stmt("SELECT * FROM episodes WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? this.rowToEpisode(row) : null;
+  }
+
+  private getNextTurnIndex(sessionId: string): number {
+    const row = this.stmt(
+      "SELECT MAX(turn_index) as max_turn FROM episodes WHERE session_id = ?"
+    ).get(sessionId) as { max_turn: number | null } | undefined;
+    return (row?.max_turn ?? -1) + 1;
+  }
+
+  /**
+   * Get all episodes in a session
+   */
+  getSessionEpisodes(sessionId: string): Episode[] {
+    const rows = this.stmt(
+      "SELECT * FROM episodes WHERE session_id = ? ORDER BY turn_index"
+    ).all(sessionId) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToEpisode(row));
+  }
+
+  /**
+   * Get unconsolidated episodes for processing
+   */
+  getUnconsolidatedEpisodes(limit: number = 100): Episode[] {
+    const rows = this.stmt(
+      "SELECT * FROM episodes WHERE consolidated = 0 ORDER BY timestamp ASC LIMIT ?"
+    ).all(limit) as Record<string, unknown>[];
+    return rows.map((row) => this.rowToEpisode(row));
+  }
+
+  /**
+   * Mark episodes as consolidated
+   */
+  markEpisodesConsolidated(episodeIds: string[]): void {
+    const stmt = this.db.prepare("UPDATE episodes SET consolidated = 1 WHERE id = ?");
+    for (const id of episodeIds) {
+      stmt.run(id);
+    }
+  }
+
+  /**
+   * Get recent sessions for context
+   */
+  getRecentSessions(limit: number = 10): Array<{ session_id: string; episode_count: number; last_activity: Date }> {
+    const rows = this.stmt(`
+      SELECT session_id, COUNT(*) as episode_count, MAX(timestamp) as last_activity
+      FROM episodes
+      GROUP BY session_id
+      ORDER BY last_activity DESC
+      LIMIT ?
+    `).all(limit) as Array<{ session_id: string; episode_count: number; last_activity: string }>;
+
+    return rows.map(r => ({
+      session_id: r.session_id,
+      episode_count: r.episode_count,
+      last_activity: new Date(r.last_activity),
+    }));
+  }
+
+  private rowToEpisode(row: Record<string, unknown>): Episode {
+    return {
+      id: row.id as string,
+      session_id: row.session_id as string,
+      turn_index: row.turn_index as number,
+      role: row.role as "user" | "assistant",
+      content: row.content as string,
+      timestamp: new Date(row.timestamp as string),
+      consolidated: Boolean(row.consolidated),
+    };
   }
 
   // ============ BM25 Search ============
@@ -860,6 +1040,8 @@ export class EngramDatabase {
     observations: number;
     digests: number;
     contradictions: number;
+    episodes: number;
+    unconsolidated_episodes: number;
   } {
     // Single query for all stats - much faster than separate queries
     const row = this.stmt(`
@@ -869,7 +1051,9 @@ export class EngramDatabase {
         (SELECT COUNT(*) FROM relations) as relations,
         (SELECT COUNT(*) FROM observations) as observations,
         (SELECT COUNT(*) FROM digests) as digests,
-        (SELECT COUNT(*) FROM contradictions WHERE resolved = 0) as contradictions
+        (SELECT COUNT(*) FROM contradictions WHERE resolved = 0) as contradictions,
+        (SELECT COUNT(*) FROM episodes) as episodes,
+        (SELECT COUNT(*) FROM episodes WHERE consolidated = 0) as unconsolidated_episodes
     `).get() as {
       memories: number;
       entities: number;
@@ -877,6 +1061,8 @@ export class EngramDatabase {
       observations: number;
       digests: number;
       contradictions: number;
+      episodes: number;
+      unconsolidated_episodes: number;
     };
 
     return row;
@@ -906,9 +1092,12 @@ export class EngramDatabase {
       content: row.content as string,
       source: row.source as string,
       timestamp: new Date(row.timestamp as string),
+      event_time: row.event_time ? new Date(row.event_time as string) : null,
       importance: row.importance as number,
       access_count: row.access_count as number,
       last_accessed: row.last_accessed ? new Date(row.last_accessed as string) : null,
+      stability: (row.stability as number) ?? 1.0,
+      emotional_weight: (row.emotional_weight as number) ?? 0.5,
     };
   }
 

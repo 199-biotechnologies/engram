@@ -1,6 +1,7 @@
 /**
  * Hybrid Search with Reciprocal Rank Fusion (RRF)
  * Combines BM25 (keyword) and ColBERT (semantic) search
+ * Enhanced with temporal decay and salience scoring
  */
 
 import { EngramDatabase, Memory } from "../storage/database.js";
@@ -10,10 +11,65 @@ import { ColBERTRetriever, SimpleRetriever, SearchResult, Document } from "./col
 export interface HybridSearchResult {
   memory: Memory;
   score: number;
+  retention: number;  // 0-1 how well-retained this memory is
   sources: {
     bm25?: number;
     semantic?: number;
     graph?: number;
+  };
+}
+
+/**
+ * Calculate Ebbinghaus forgetting curve retention
+ * R = e^(-t/S) where t=time since last access, S=stability
+ *
+ * Higher stability = slower forgetting
+ * Recent access = higher retention
+ */
+function calculateRetention(memory: Memory, now: Date): number {
+  // Use last_accessed if available, otherwise timestamp
+  const lastActive = memory.last_accessed || memory.timestamp;
+  const daysSinceAccess = (now.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24);
+
+  // Stability is our memory strength (default 1.0, increases with recalls)
+  const stability = memory.stability || 1.0;
+
+  // Half-life in days = stability * 7 (so stability=1 means 7-day half-life)
+  const halfLife = stability * 7;
+
+  // Exponential decay: R = e^(-0.693 * t / halfLife)
+  const retention = Math.exp(-0.693 * daysSinceAccess / halfLife);
+
+  return Math.max(0, Math.min(1, retention));
+}
+
+/**
+ * Calculate salience score - how important/memorable is this?
+ * Combines emotional weight, importance, and access patterns
+ */
+function calculateSalience(memory: Memory): number {
+  const importance = memory.importance || 0.5;
+  const emotionalWeight = memory.emotional_weight || 0.5;
+  const accessBonus = Math.min(1, Math.log(1 + (memory.access_count || 0)) / 5);
+
+  // Weighted combination
+  return (importance * 0.4) + (emotionalWeight * 0.4) + (accessBonus * 0.2);
+}
+
+/**
+ * Apply temporal and salience adjustments to search results
+ */
+function adjustScore(memory: Memory, baseScore: number, now: Date): { adjusted: number; retention: number } {
+  const retention = calculateRetention(memory, now);
+  const salience = calculateSalience(memory);
+
+  // Final score = base * (0.5 + 0.3*retention + 0.2*salience)
+  // This means: 50% retrieval match, 30% recency/stability, 20% importance
+  const multiplier = 0.5 + (0.3 * retention) + (0.2 * salience);
+
+  return {
+    adjusted: baseScore * multiplier,
+    retention,
   };
 }
 
@@ -133,18 +189,21 @@ export class HybridSearch {
     // Sort by RRF score
     rrfScores.sort((a, b) => b.score - a.score);
 
-    // Get top results with full memory data
-    const results: HybridSearchResult[] = [];
+    // Get results with full memory data and apply temporal adjustments
+    const now = new Date();
+    const adjustedResults: Array<HybridSearchResult & { originalScore: number }> = [];
 
-    for (const { id, score, sources } of rrfScores.slice(0, limit)) {
+    for (const { id, score, sources } of rrfScores) {
       const memory = this.db.getMemory(id);
       if (memory) {
-        // Update access count
-        this.db.touchMemory(id);
+        // Apply Ebbinghaus decay and salience scoring
+        const { adjusted, retention } = adjustScore(memory, score, now);
 
-        results.push({
+        adjustedResults.push({
           memory,
-          score,
+          score: adjusted,
+          retention,
+          originalScore: score,
           sources: {
             bm25: sources.bm25,
             semantic: sources.semantic,
@@ -152,6 +211,23 @@ export class HybridSearch {
           },
         });
       }
+    }
+
+    // Re-sort by adjusted score (accounts for recency/stability)
+    adjustedResults.sort((a, b) => b.score - a.score);
+
+    // Take top results and update access counts
+    const results: HybridSearchResult[] = [];
+    for (const result of adjustedResults.slice(0, limit)) {
+      // Update access count (which also increases stability for future searches)
+      this.db.touchMemory(result.memory.id);
+
+      results.push({
+        memory: result.memory,
+        score: result.score,
+        retention: result.retention,
+        sources: result.sources,
+      });
     }
 
     return results;
