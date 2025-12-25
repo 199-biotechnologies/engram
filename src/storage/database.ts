@@ -112,23 +112,17 @@ export class EngramDatabase {
 
   private initialize(): void {
     // Memories table (Semantic Memory - neocortex analog)
+    // Create table with base columns first (for new databases)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
         content TEXT NOT NULL,
         source TEXT DEFAULT 'conversation',
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        event_time DATETIME,
         importance REAL DEFAULT 0.5,
         access_count INTEGER DEFAULT 0,
-        last_accessed DATETIME,
-        stability REAL DEFAULT 1.0,
-        emotional_weight REAL DEFAULT 0.5
+        last_accessed DATETIME
       );
-
-      CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
-      CREATE INDEX IF NOT EXISTS idx_memories_event_time ON memories(event_time);
     `);
 
     // Episodes table (Episodic Memory - hippocampal buffer)
@@ -142,14 +136,21 @@ export class EngramDatabase {
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         consolidated INTEGER DEFAULT 0
       );
+    `);
 
+    // IMPORTANT: Migrate schema BEFORE creating indexes on new columns
+    // This adds event_time, stability, emotional_weight to existing databases
+    this.migrateSchema();
+
+    // Now create all indexes (after migration ensures columns exist)
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
+      CREATE INDEX IF NOT EXISTS idx_memories_event_time ON memories(event_time);
       CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
       CREATE INDEX IF NOT EXISTS idx_episodes_consolidated ON episodes(consolidated);
       CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp);
     `);
-
-    // Migrate existing tables: add new columns if they don't exist
-    this.migrateSchema();
 
     // FTS5 for BM25 search
     this.db.exec(`
