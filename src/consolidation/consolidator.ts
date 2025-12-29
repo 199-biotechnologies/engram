@@ -112,6 +112,7 @@ interface ConsolidateOptions {
 
 export class Consolidator {
   private client: Anthropic | null = null;
+  private cachedApiKey: string | null = null;
   private db: EngramDatabase;
   private graph: KnowledgeGraph | null = null;
   private search: HybridSearch | null = null;
@@ -125,14 +126,36 @@ export class Consolidator {
     this.graph = graph || null;
     this.search = search || null;
 
+    // Initial check
+    this.ensureClient();
+  }
+
+  /**
+   * Ensure client is configured with latest API key
+   * Lazy initialization: checks for new/updated API key each call
+   */
+  private ensureClient(): Anthropic | null {
     const apiKey = getAnthropicApiKey();
-    if (apiKey) {
-      this.client = new Anthropic({ apiKey });
+
+    if (!apiKey) {
+      this.client = null;
+      this.cachedApiKey = null;
+      return null;
     }
+
+    // Only recreate client if API key changed
+    if (apiKey !== this.cachedApiKey) {
+      console.error(`[Engram] Consolidator: API key ${this.cachedApiKey ? "updated" : "configured"}`);
+      this.client = new Anthropic({ apiKey });
+      this.cachedApiKey = apiKey;
+    }
+
+    return this.client;
   }
 
   isConfigured(): boolean {
-    return this.client !== null;
+    // Re-check in case API key was added after startup
+    return this.ensureClient() !== null;
   }
 
   /**
@@ -144,7 +167,8 @@ export class Consolidator {
     contradictionsFound: number;
     memoriesProcessed: number;
   }> {
-    if (!this.client) {
+    const client = this.ensureClient();
+    if (!client) {
       throw new Error("Consolidator not configured - set ANTHROPIC_API_KEY");
     }
 
@@ -221,7 +245,8 @@ export class Consolidator {
   private async consolidateBatch(
     memories: Memory[]
   ): Promise<ConsolidationResult | null> {
-    if (!this.client) return null;
+    const client = this.ensureClient();
+    if (!client) return null;
 
     // Format memories for the prompt
     const memoriesText = memories
@@ -246,7 +271,7 @@ ${memoriesText}
 Create a detailed digest that preserves all important information. Respond with JSON only.`;
 
     try {
-      const response = await this.client.messages.create({
+      const response = await client.messages.create({
         model: "claude-opus-4-5-20251101",
         max_tokens: 16000,
         temperature: 1, // Required for extended thinking
@@ -290,7 +315,8 @@ Create a detailed digest that preserves all important information. Respond with 
    * Create an entity profile by consolidating all observations about an entity
    */
   async consolidateEntity(entityId: string): Promise<Digest | null> {
-    if (!this.client) {
+    const client = this.ensureClient();
+    if (!client) {
       throw new Error("Consolidator not configured - set ANTHROPIC_API_KEY");
     }
 
@@ -335,7 +361,7 @@ ${memoriesText}
 Create a rich, detailed profile. Do not summarize away important nuances. Respond with JSON only.`;
 
     try {
-      const response = await this.client.messages.create({
+      const response = await client.messages.create({
         model: "claude-opus-4-5-20251101",
         max_tokens: 16000,
         temperature: 1, // Required for extended thinking
@@ -444,7 +470,8 @@ Create a rich, detailed profile. Do not summarize away important nuances. Respon
     memoriesCreated: number;
     entitiesCreated: number;
   }> {
-    if (!this.client) {
+    const client = this.ensureClient();
+    if (!client) {
       throw new Error("Consolidator not configured - set ANTHROPIC_API_KEY");
     }
 
@@ -537,7 +564,8 @@ Create a rich, detailed profile. Do not summarize away important nuances. Respon
   private async extractMemoriesFromEpisodes(
     episodes: Episode[]
   ): Promise<EpisodeExtractionResult | null> {
-    if (!this.client) return null;
+    const client = this.ensureClient();
+    if (!client) return null;
 
     // Format conversation
     const conversationText = episodes
@@ -555,7 +583,7 @@ Respond with JSON only.`;
 
     try {
       // Use Haiku for speed/cost (no extended thinking needed)
-      const response = await this.client.messages.create({
+      const response = await client.messages.create({
         model: "claude-haiku-4-5-20251201",
         max_tokens: 4000,
         messages: [

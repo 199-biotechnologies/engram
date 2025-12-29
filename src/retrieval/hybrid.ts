@@ -327,8 +327,12 @@ export class HybridSearch {
     // Log this retrieval for deferred learning
     try {
       this.db.createRetrievalLog(this.sessionId, recallId, query, allResultIds);
-    } catch {
-      // Ignore duplicate recall_id errors (can happen with rapid queries)
+    } catch (error) {
+      // Only ignore duplicate recall_id errors (UNIQUE constraint), log all others
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!msg.includes("UNIQUE constraint")) {
+        console.error(`[Engram] Failed to create retrieval log: ${msg}`);
+      }
     }
 
     return {

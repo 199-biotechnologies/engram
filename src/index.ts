@@ -624,10 +624,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           need_more?: boolean;
         };
 
-        // Update the retrieval log with feedback
-        const updated = db.updateRetrievalFeedback(recall_id, useful_memory_ids, need_more);
-
-        if (!updated) {
+        // First, get the original recall to validate useful_memory_ids
+        const retrievalLog = db.getRetrievalLog(recall_id);
+        if (!retrievalLog) {
           return {
             content: [
               {
@@ -635,6 +634,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 text: JSON.stringify({
                   success: false,
                   error: `Recall ID not found: ${recall_id}`,
+                }),
+              },
+            ],
+          };
+        }
+
+        // Validate: only accept IDs that were in the original recall
+        const originalIdSet = new Set(retrievalLog.memory_ids);
+        const validUsefulIds = useful_memory_ids.filter(id => originalIdSet.has(id));
+        const invalidIds = useful_memory_ids.filter(id => !originalIdSet.has(id));
+
+        if (invalidIds.length > 0) {
+          console.error(`[Engram] memory_feedback: ${invalidIds.length} IDs not in original recall, ignored: ${invalidIds.join(", ")}`);
+        }
+
+        // Update the retrieval log with validated feedback
+        const updated = db.updateRetrievalFeedback(recall_id, validUsefulIds, need_more);
+
+        if (!updated) {
+          // Should not happen since we already checked above, but handle gracefully
+          console.error(`[Engram] memory_feedback: failed to update retrieval log ${recall_id}`);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: false,
+                  error: `Failed to update feedback for: ${recall_id}`,
                 }),
               },
             ],
@@ -664,7 +691,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 text: JSON.stringify({
                   success: true,
                   feedback_recorded: true,
-                  useful_count: useful_memory_ids.length,
+                  useful_count: validUsefulIds.length,
                   expanded_search: true,
                   additional_results: formatted,
                   additional_count: formatted.length,
@@ -697,7 +724,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify({
                 success: true,
                 feedback_recorded: true,
-                useful_count: useful_memory_ids.length,
+                useful_count: validUsefulIds.length,
                 learning_applied: learningApplied > 0,
                 connections_strengthened: learningApplied,
               }, null, 2),

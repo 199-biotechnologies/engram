@@ -1183,59 +1183,72 @@ export class EngramDatabase {
 
   /**
    * Record that memories were retrieved together (co-retrieval)
+   * Uses cached statement and transaction for O(n²) efficiency
    */
   recordCoRetrieval(memoryIds: string[]): void {
     if (memoryIds.length < 2) return;
 
-    // Update all pairs
-    for (let i = 0; i < memoryIds.length; i++) {
-      for (let j = i + 1; j < memoryIds.length; j++) {
-        const [a, b] = memoryIds[i] < memoryIds[j]
-          ? [memoryIds[i], memoryIds[j]]
-          : [memoryIds[j], memoryIds[i]];
+    // Cache statement once (not per iteration)
+    const upsertStmt = this.stmt(`
+      INSERT INTO memory_connections (id, memory_a, memory_b, co_retrievals, last_fired)
+      VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+      ON CONFLICT(memory_a, memory_b) DO UPDATE SET
+        co_retrievals = co_retrievals + 1,
+        last_fired = CURRENT_TIMESTAMP
+    `);
 
-        this.db.prepare(`
-          INSERT INTO memory_connections (id, memory_a, memory_b, co_retrievals, last_fired)
-          VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
-          ON CONFLICT(memory_a, memory_b) DO UPDATE SET
-            co_retrievals = co_retrievals + 1,
-            last_fired = CURRENT_TIMESTAMP
-        `).run(randomUUID(), a, b);
+    // Wrap in transaction for batch efficiency
+    this.db.transaction(() => {
+      for (let i = 0; i < memoryIds.length; i++) {
+        for (let j = i + 1; j < memoryIds.length; j++) {
+          const [a, b] = memoryIds[i] < memoryIds[j]
+            ? [memoryIds[i], memoryIds[j]]
+            : [memoryIds[j], memoryIds[i]];
+
+          upsertStmt.run(randomUUID(), a, b);
+        }
       }
-    }
+    })();
   }
 
   /**
    * Record that memories were useful together (from LLM feedback)
    * This is what actually strengthens connections
+   * Uses cached statement and transaction for O(n²) efficiency
    */
   recordCoUseful(memoryIds: string[]): void {
     if (memoryIds.length < 2) return;
 
-    for (let i = 0; i < memoryIds.length; i++) {
-      for (let j = i + 1; j < memoryIds.length; j++) {
-        const [a, b] = memoryIds[i] < memoryIds[j]
-          ? [memoryIds[i], memoryIds[j]]
-          : [memoryIds[j], memoryIds[i]];
+    // Cache statement once (not per iteration)
+    const updateStmt = this.stmt(`
+      UPDATE memory_connections
+      SET co_useful = ?, strength = ?, last_fired = CURRENT_TIMESTAMP
+      WHERE memory_a = ? AND memory_b = ?
+    `);
 
-        // Get current stats to calculate new strength
-        const conn = this.getOrCreateConnection(a, b);
-        const newCoUseful = conn.co_useful + 1;
-        const newCoRetrievals = Math.max(conn.co_retrievals, newCoUseful);
+    // Wrap in transaction for batch efficiency
+    this.db.transaction(() => {
+      for (let i = 0; i < memoryIds.length; i++) {
+        for (let j = i + 1; j < memoryIds.length; j++) {
+          const [a, b] = memoryIds[i] < memoryIds[j]
+            ? [memoryIds[i], memoryIds[j]]
+            : [memoryIds[j], memoryIds[i]];
 
-        // Calculate strength with diminishing returns
-        const usefulRatio = newCoUseful / Math.max(1, newCoRetrievals);
-        const diminished = Math.sqrt(usefulRatio);
-        const confidence = Math.min(1, newCoUseful / 3); // Require 3+ co-useful for strong connection
-        const newStrength = diminished * confidence;
+          // Get current stats to calculate new strength
+          const conn = this.getOrCreateConnection(a, b);
+          const newCoUseful = conn.co_useful + 1;
+          const newCoRetrievals = Math.max(conn.co_retrievals, newCoUseful);
 
-        this.db.prepare(`
-          UPDATE memory_connections
-          SET co_useful = ?, strength = ?, last_fired = CURRENT_TIMESTAMP
-          WHERE memory_a = ? AND memory_b = ?
-        `).run(newCoUseful, newStrength, a, b);
+          // Calculate strength with diminishing returns
+          const usefulRatio = newCoUseful / Math.max(1, newCoRetrievals);
+          const diminished = Math.sqrt(usefulRatio);
+          const confidence = Math.min(1, newCoUseful / 3); // Require 3+ co-useful for strong connection
+          const newStrength = diminished * confidence;
+
+          updateStmt.run(newCoUseful, newStrength, a, b);
+        }
       }
-    }
+    })();
   }
 
   /**

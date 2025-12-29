@@ -301,6 +301,9 @@ export class ChatHandler {
   refreshClient(): void {
     const apiKey = getAnthropicApiKey();
     if (apiKey) {
+      if (!this.client) {
+        console.error("[Engram] ChatHandler: API key configured");
+      }
       this.client = new Anthropic({ apiKey });
     } else {
       this.client = null;
@@ -308,6 +311,8 @@ export class ChatHandler {
   }
 
   isConfigured(): boolean {
+    // Re-check API key in case it was added after startup
+    this.refreshClient();
     return this.client !== null;
   }
 
@@ -341,6 +346,7 @@ export class ChatHandler {
 
   // Queue-aware chat method
   async chat(userMessage: string): Promise<string> {
+    this.refreshClient();
     if (!this.client) {
       return "Chat is not configured. Set ANTHROPIC_API_KEY environment variable.";
     }
@@ -357,6 +363,7 @@ export class ChatHandler {
 
   // Streaming chat with callbacks for real-time updates
   async *chatStream(userMessage: string): AsyncGenerator<StreamEvent> {
+    this.refreshClient();
     if (!this.client) {
       yield { type: "error", content: "Chat is not configured. Set ANTHROPIC_API_KEY environment variable." };
       return;
