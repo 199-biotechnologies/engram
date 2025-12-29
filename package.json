@@ -1,6 +1,6 @@
 {
   "name": "@199-bio/engram",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Give Claude a perfect memory. Local-first MCP server with hybrid search.",
   "type": "module",
   "main": "dist/index.js",
