@@ -98,6 +98,45 @@ nav {
   font-variant-numeric: tabular-nums;
 }
 
+/* API Status indicator */
+.api-status {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 0.25rem 0.625rem;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+}
+
+.api-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: background 0.2s ease;
+}
+
+.api-status.connected .api-dot {
+  background: var(--success);
+  box-shadow: 0 0 4px var(--success);
+}
+
+.api-status.disconnected .api-dot {
+  background: var(--danger);
+}
+
+.api-status.checking .api-dot {
+  background: var(--accent);
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* Main content */
 main {
   max-width: 960px;
@@ -418,6 +457,25 @@ button:disabled {
   font-style: italic;
 }
 
+/* Load more button */
+.load-more-container {
+  display: flex;
+  justify-content: center;
+  padding: 1.5rem 0;
+}
+
+.load-more-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  padding: 0.75rem 2rem;
+  font-size: 0.875rem;
+}
+
+.load-more-btn:hover {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
 /* Score badge */
 .score {
   display: inline-block;
@@ -570,6 +628,42 @@ button:disabled {
   border: 1px dashed var(--border);
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* Streaming message indicator */
+.chat-message.streaming {
+  position: relative;
+}
+
+.chat-message.streaming::after {
+  content: '';
+  display: inline-block;
+  width: 0.5rem;
+  height: 1rem;
+  background: var(--accent);
+  margin-left: 0.25rem;
+  animation: blink 0.7s infinite;
+  vertical-align: text-bottom;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Tool indicator in streaming */
+.tool-indicator {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--accent);
+  font-style: italic;
+  padding: 0.5rem 0;
+  border-top: 1px dashed var(--border);
+  margin-top: 0.5rem;
+}
+
+.tool-indicator::before {
+  content: '⚙ ';
 }
 
 .chat-status {
@@ -750,11 +844,64 @@ body.chat-open main {
   color: var(--bg-primary);
 }
 
+/* Digest hierarchy */
+.digest-level {
+  margin-bottom: 2rem;
+}
+
+.level-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+}
+
+.level-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  background: var(--accent);
+  color: white;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  border-radius: 2px;
+}
+
+.level-count {
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.level-desc {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+}
+
+.digest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
 /* Digest item */
 .digest-item {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   padding: 1.25rem 1.5rem;
+}
+
+.digest-item[data-level="3"] {
+  border-left: 3px solid var(--accent);
+}
+
+.digest-item[data-level="2"] {
+  border-left: 3px solid var(--success);
 }
 
 .digest-item .content {

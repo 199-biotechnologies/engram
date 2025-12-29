@@ -135,7 +135,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "delete_memory",
-    description: "Delete a memory by its ID.",
+    description: "Delete a memory by its ID (soft-delete, can be recovered).",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -145,6 +145,87 @@ const TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["id"],
+    },
+  },
+  {
+    name: "edit_memory",
+    description: "Edit an existing memory's content or importance.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        id: {
+          type: "string",
+          description: "The memory ID to edit",
+        },
+        content: {
+          type: "string",
+          description: "New content (replaces existing)",
+        },
+        importance: {
+          type: "number",
+          description: "New importance (0-1): 0.9=core identity, 0.8=major, 0.5=normal, 0.3=minor",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "create_memory",
+    description: "Create a new memory. Use for storing user information, preferences, or facts.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        content: {
+          type: "string",
+          description: "The information to store",
+        },
+        importance: {
+          type: "number",
+          description: "0-1 score: 0.9=core identity, 0.8=major, 0.5=normal (default), 0.3=minor",
+        },
+      },
+      required: ["content"],
+    },
+  },
+  {
+    name: "create_entity",
+    description: "Create a new entity (person, organization, or place).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: {
+          type: "string",
+          description: "The entity name",
+        },
+        type: {
+          type: "string",
+          enum: ["person", "organization", "place"],
+          description: "Entity type",
+        },
+      },
+      required: ["name", "type"],
+    },
+  },
+  {
+    name: "create_relationship",
+    description: "Create a relationship between two entities.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        from: {
+          type: "string",
+          description: "Source entity name",
+        },
+        to: {
+          type: "string",
+          description: "Target entity name",
+        },
+        type: {
+          type: "string",
+          description: "Relationship type (e.g., 'works_at', 'lives_in', 'knows', 'sibling_of')",
+        },
+      },
+      required: ["from", "to", "type"],
     },
   },
   {
@@ -183,12 +264,22 @@ interface ChatMessage {
   content: string;
 }
 
+// Stream event types for SSE
+export interface StreamEvent {
+  type: "text" | "tool_start" | "tool_end" | "error" | "done";
+  content?: string;
+  tool?: string;
+  result?: unknown;
+}
+
 export class ChatHandler {
   private client: Anthropic | null = null;
   private db: EngramDatabase;
   private graph: KnowledgeGraph;
   private search: HybridSearch;
   private conversationHistory: Anthropic.MessageParam[] = [];
+  private isProcessing: boolean = false;
+  private messageQueue: Array<{ message: string; resolve: (value: string) => void; reject: (error: Error) => void }> = [];
 
   constructor(options: {
     db: EngramDatabase;
@@ -209,11 +300,170 @@ export class ChatHandler {
     return this.client !== null;
   }
 
+  isBusy(): boolean {
+    return this.isProcessing;
+  }
+
+  getQueueLength(): number {
+    return this.messageQueue.length;
+  }
+
   clearHistory(): void {
     this.conversationHistory = [];
   }
 
+  // Process message queue
+  private async processQueue(): Promise<void> {
+    if (this.isProcessing || this.messageQueue.length === 0) return;
+
+    const { message, resolve, reject } = this.messageQueue.shift()!;
+    try {
+      const result = await this.processMessage(message);
+      resolve(result);
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    // Process next in queue
+    this.processQueue();
+  }
+
+  // Queue-aware chat method
   async chat(userMessage: string): Promise<string> {
+    if (!this.client) {
+      return "Chat is not configured. Set ANTHROPIC_API_KEY environment variable.";
+    }
+
+    // If busy, queue the message
+    if (this.isProcessing) {
+      return new Promise((resolve, reject) => {
+        this.messageQueue.push({ message: userMessage, resolve, reject });
+      });
+    }
+
+    return this.processMessage(userMessage);
+  }
+
+  // Streaming chat with callbacks for real-time updates
+  async *chatStream(userMessage: string): AsyncGenerator<StreamEvent> {
+    if (!this.client) {
+      yield { type: "error", content: "Chat is not configured. Set ANTHROPIC_API_KEY environment variable." };
+      return;
+    }
+
+    this.isProcessing = true;
+
+    // Add user message to history
+    this.conversationHistory.push({
+      role: "user",
+      content: userMessage,
+    });
+
+    try {
+      // Keep conversation history manageable
+      if (this.conversationHistory.length > 20) {
+        this.conversationHistory = this.conversationHistory.slice(-20);
+      }
+
+      let continueLoop = true;
+      let fullResponse = "";
+
+      while (continueLoop) {
+        const stream = this.client.messages.stream({
+          model: "claude-haiku-4-5-20241022",
+          max_tokens: 1024,
+          system: SYSTEM_PROMPT,
+          tools: TOOLS,
+          messages: this.conversationHistory,
+        });
+
+        let currentToolUse: { id: string; name: string; input: string } | null = null;
+
+        for await (const event of stream) {
+          if (event.type === "content_block_start") {
+            if (event.content_block.type === "tool_use") {
+              currentToolUse = {
+                id: event.content_block.id,
+                name: event.content_block.name,
+                input: "",
+              };
+              yield { type: "tool_start", tool: event.content_block.name };
+            }
+          } else if (event.type === "content_block_delta") {
+            if (event.delta.type === "text_delta") {
+              fullResponse += event.delta.text;
+              yield { type: "text", content: event.delta.text };
+            } else if (event.delta.type === "input_json_delta" && currentToolUse) {
+              currentToolUse.input += event.delta.partial_json;
+            }
+          } else if (event.type === "content_block_stop") {
+            if (currentToolUse) {
+              // Execute the tool
+              let toolInput: Record<string, unknown> = {};
+              try {
+                toolInput = JSON.parse(currentToolUse.input || "{}");
+              } catch {
+                toolInput = {};
+              }
+
+              const result = await this.executeTool(currentToolUse.name, toolInput);
+              yield { type: "tool_end", tool: currentToolUse.name, result };
+              currentToolUse = null;
+            }
+          }
+        }
+
+        // Get final message to check stop reason
+        const finalMessage = await stream.finalMessage();
+
+        if (finalMessage.stop_reason === "tool_use") {
+          // Process tool results and continue
+          const toolUseBlocks = finalMessage.content.filter(
+            (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+          );
+
+          const toolResults: Anthropic.ToolResultBlockParam[] = [];
+          for (const toolUse of toolUseBlocks) {
+            const result = await this.executeTool(toolUse.name, toolUse.input as Record<string, unknown>);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolUse.id,
+              content: JSON.stringify(result),
+            });
+          }
+
+          // Add to history
+          this.conversationHistory.push({
+            role: "assistant",
+            content: finalMessage.content,
+          });
+          this.conversationHistory.push({
+            role: "user",
+            content: toolResults,
+          });
+        } else {
+          // Done - add final response to history
+          this.conversationHistory.push({
+            role: "assistant",
+            content: finalMessage.content,
+          });
+          continueLoop = false;
+        }
+      }
+
+      yield { type: "done" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      yield { type: "error", content: message };
+    } finally {
+      this.isProcessing = false;
+      // Process any queued messages
+      this.processQueue();
+    }
+  }
+
+  // Original non-streaming method for backwards compatibility
+  private async processMessage(userMessage: string): Promise<string> {
     if (!this.client) {
       return "Chat is not configured. Set ANTHROPIC_API_KEY environment variable.";
     }
@@ -427,9 +677,93 @@ export class ChatHandler {
           return { error: `Memory not found: ${id}` };
         }
 
+        // Soft-delete: remove from index and disable
         await this.search.removeFromIndex(id);
-        this.db.deleteMemory(id);
-        return { success: true, deleted_id: id };
+        this.db.updateMemory(id, { disabled: true });
+        return { success: true, disabled_id: id, message: "Memory disabled (soft-deleted)" };
+      }
+
+      case "edit_memory": {
+        const id = input.id as string;
+        const content = input.content as string | undefined;
+        const importance = input.importance as number | undefined;
+
+        const memory = this.db.getMemory(id);
+        if (!memory) {
+          return { error: `Memory not found: ${id}` };
+        }
+
+        const updates: { content?: string; importance?: number } = {};
+        if (content !== undefined) updates.content = content;
+        if (importance !== undefined) updates.importance = importance;
+
+        if (Object.keys(updates).length === 0) {
+          return { error: "No updates provided" };
+        }
+
+        const updated = this.db.updateMemory(id, updates);
+
+        // Re-index if content changed
+        if (content !== undefined && updated) {
+          await this.search.removeFromIndex(id);
+          await this.search.indexMemory(updated);
+        }
+
+        return {
+          success: true,
+          memory_id: id,
+          updated_fields: Object.keys(updates),
+        };
+      }
+
+      case "create_memory": {
+        const content = input.content as string;
+        const importance = (input.importance as number) || 0.5;
+
+        const memory = this.db.createMemory(content, "chat", importance);
+        await this.search.indexMemory(memory);
+
+        return {
+          success: true,
+          memory_id: memory.id,
+          content: memory.content.substring(0, 100) + (memory.content.length > 100 ? "..." : ""),
+        };
+      }
+
+      case "create_entity": {
+        const name = input.name as string;
+        const type = input.type as "person" | "organization" | "place";
+
+        // Check if entity already exists
+        const existing = this.db.findEntityByName(name);
+        if (existing) {
+          return { error: `Entity already exists: ${name}`, existing_id: existing.id };
+        }
+
+        const entity = this.graph.getOrCreateEntity(name, type);
+        return {
+          success: true,
+          entity_id: entity.id,
+          name: entity.name,
+          type: entity.type,
+        };
+      }
+
+      case "create_relationship": {
+        const fromName = input.from as string;
+        const toName = input.to as string;
+        const type = input.type as string;
+
+        // Get or create both entities (default to person type if not existing)
+        const fromEntity = this.graph.getOrCreateEntity(fromName, "person");
+        const toEntity = this.graph.getOrCreateEntity(toName, "person");
+
+        this.graph.relate(fromEntity.name, toEntity.name, type);
+
+        return {
+          success: true,
+          relationship: `${fromName} -[${type}]-> ${toName}`,
+        };
       }
 
       case "find_duplicates": {

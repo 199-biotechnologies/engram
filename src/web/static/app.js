@@ -8,6 +8,8 @@ const API_BASE = '';
 // State
 let currentView = 'memories';
 let editingMemoryId = null;
+let memoriesOffset = 0;
+const MEMORIES_PAGE_SIZE = 25;
 
 // DOM Elements
 const views = {
@@ -72,17 +74,28 @@ async function loadStats() {
   statsEl.textContent = text;
 }
 
-// Load memories
-async function loadMemories(query = '') {
-  const path = query ? `/api/memories?q=${encodeURIComponent(query)}` : '/api/memories';
+// Load memories with pagination
+async function loadMemories(query = '', append = false) {
+  if (!append) {
+    memoriesOffset = 0;
+  }
+
+  const limit = MEMORIES_PAGE_SIZE;
+  let path;
+  if (query) {
+    path = `/api/memories?q=${encodeURIComponent(query)}&limit=${limit}`;
+  } else {
+    path = `/api/memories?limit=${limit}&offset=${memoriesOffset}`;
+  }
+
   const data = await api(path);
 
-  if (data.memories.length === 0) {
+  if (data.memories.length === 0 && !append) {
     memoriesList.innerHTML = '<div class="empty-state">No memories found</div>';
     return;
   }
 
-  memoriesList.innerHTML = data.memories.map(m => `
+  const memoriesHtml = data.memories.map(m => `
     <div class="list-item memory-item" data-id="${m.id}">
       <div class="content">${escapeHtml(m.content)}</div>
       <div class="meta">
@@ -98,7 +111,29 @@ async function loadMemories(query = '') {
     </div>
   `).join('');
 
-  // Attach event listeners
+  if (append) {
+    // Remove old "Load More" button if exists
+    const oldLoadMore = memoriesList.querySelector('.load-more-container');
+    if (oldLoadMore) oldLoadMore.remove();
+    memoriesList.insertAdjacentHTML('beforeend', memoriesHtml);
+  } else {
+    memoriesList.innerHTML = memoriesHtml;
+  }
+
+  // Add "Load More" button if we got a full page and not searching
+  if (!query && data.memories.length === MEMORIES_PAGE_SIZE) {
+    memoriesList.insertAdjacentHTML('beforeend', `
+      <div class="load-more-container">
+        <button class="load-more-btn">Load More</button>
+      </div>
+    `);
+    memoriesList.querySelector('.load-more-btn').addEventListener('click', () => {
+      memoriesOffset += MEMORIES_PAGE_SIZE;
+      loadMemories('', true);
+    });
+  }
+
+  // Attach event listeners to new items
   memoriesList.querySelectorAll('.edit-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -402,7 +437,7 @@ async function loadContradictions() {
   }
 }
 
-// Load digests
+// Load digests with hierarchy visualization
 async function loadDigests() {
   try {
     const data = await api('/api/digests');
@@ -412,17 +447,59 @@ async function loadDigests() {
       return;
     }
 
-    digestsList.innerHTML = data.digests.map(d => `
-      <div class="list-item digest-item">
-        <div class="content">${escapeHtml(d.content)}</div>
-        <div class="meta">
-          ${d.topic ? `<span class="topic">${escapeHtml(d.topic)}</span>` : ''}
-          <span>Level ${d.level}</span>
-          <span>${d.source_count} memories</span>
-          <span>${formatDate(d.created_at)}</span>
-        </div>
-      </div>
-    `).join('');
+    // Group digests by level
+    const byLevel = { 1: [], 2: [], 3: [] };
+    data.digests.forEach(d => {
+      const level = d.level || 1;
+      if (!byLevel[level]) byLevel[level] = [];
+      byLevel[level].push(d);
+    });
+
+    const levelLabels = {
+      1: 'Session Summaries',
+      2: 'Topic Digests',
+      3: 'Entity Profiles'
+    };
+
+    const levelDescs = {
+      1: 'Summaries of individual conversations',
+      2: 'Consolidated topic-based knowledge',
+      3: 'High-level entity profiles and patterns'
+    };
+
+    let html = '';
+    for (const level of [3, 2, 1]) { // Show highest level first
+      const digests = byLevel[level];
+      if (digests.length === 0) continue;
+
+      html += `
+        <div class="digest-level">
+          <h3 class="level-header">
+            <span class="level-badge">L${level}</span>
+            ${levelLabels[level]}
+            <span class="level-count">(${digests.length})</span>
+          </h3>
+          <p class="level-desc">${levelDescs[level]}</p>
+          <div class="digest-list">
+      `;
+
+      digests.forEach(d => {
+        html += `
+          <div class="list-item digest-item" data-level="${level}">
+            <div class="content">${escapeHtml(d.content)}</div>
+            <div class="meta">
+              ${d.topic ? `<span class="topic">${escapeHtml(d.topic)}</span>` : ''}
+              <span>${d.source_count} sources</span>
+              <span>${formatDate(d.created_at)}</span>
+            </div>
+          </div>
+        `;
+      });
+
+      html += '</div></div>';
+    }
+
+    digestsList.innerHTML = html;
   } catch (e) {
     console.error('Failed to load digests', e);
     digestsList.innerHTML = '<div class="empty-state">Failed to load digests</div>';
@@ -637,7 +714,7 @@ function addChatMessage(content, role) {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-// Send chat message
+// Send chat message with streaming
 async function sendChatMessage(message) {
   if (!message.trim()) return;
 
@@ -646,24 +723,80 @@ async function sendChatMessage(message) {
   chatInput.value = '';
   chatInput.disabled = true;
 
-  // Show thinking indicator
-  const thinkingDiv = document.createElement('div');
-  thinkingDiv.className = 'chat-message thinking';
-  thinkingDiv.innerHTML = '<p>Thinking...</p>';
-  chatMessages.appendChild(thinkingDiv);
+  // Create assistant message div for streaming
+  const responseDiv = document.createElement('div');
+  responseDiv.className = 'chat-message assistant streaming';
+  responseDiv.innerHTML = '<p></p>';
+  chatMessages.appendChild(responseDiv);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
+  const contentEl = responseDiv.querySelector('p');
+  let currentContent = '';
+
   try {
-    const data = await api('/api/chat', {
+    const response = await fetch('/api/chat/stream', {
       method: 'POST',
-      body: { message },
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
     });
 
-    // Remove thinking indicator
-    thinkingDiv.remove();
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Stream request failed');
+    }
 
-    // Add assistant response
-    addChatMessage(data.response, 'assistant');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const event = JSON.parse(line.slice(6));
+
+            switch (event.type) {
+              case 'text':
+                currentContent += event.content;
+                contentEl.innerHTML = formatChatContent(currentContent);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+                break;
+
+              case 'tool_start':
+                // Show tool execution indicator
+                const toolIndicator = document.createElement('span');
+                toolIndicator.className = 'tool-indicator';
+                toolIndicator.textContent = `Using ${event.tool}...`;
+                contentEl.appendChild(toolIndicator);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+                break;
+
+              case 'tool_end':
+                // Remove tool indicator
+                const indicators = contentEl.querySelectorAll('.tool-indicator');
+                indicators.forEach(ind => ind.remove());
+                break;
+
+              case 'error':
+                currentContent += `\n\nError: ${event.content}`;
+                contentEl.innerHTML = formatChatContent(currentContent);
+                break;
+
+              case 'done':
+                responseDiv.classList.remove('streaming');
+                break;
+            }
+          } catch (e) {
+            // Ignore JSON parse errors for incomplete chunks
+          }
+        }
+      }
+    }
 
     // Refresh data in case something changed
     loadStats();
@@ -672,12 +805,21 @@ async function sendChatMessage(message) {
     if (currentView === 'memories') loadMemories(searchInput.value);
 
   } catch (e) {
-    thinkingDiv.remove();
-    addChatMessage('Error: Failed to get response. Please try again.', 'assistant');
+    responseDiv.classList.remove('streaming');
+    contentEl.innerHTML = formatChatContent(`Error: ${e.message || 'Failed to get response'}`);
   }
 
   chatInput.disabled = false;
   chatInput.focus();
+}
+
+// Format chat content (markdown-like)
+function formatChatContent(content) {
+  return content
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
 }
 
 // Clear chat history
@@ -713,6 +855,33 @@ chatForm.addEventListener('submit', (e) => {
   sendChatMessage(chatInput.value);
 });
 
+// ============ API Status Indicator ============
+
+const apiStatusEl = document.getElementById('api-status');
+
+async function checkApiStatus() {
+  apiStatusEl.classList.remove('connected', 'disconnected');
+  apiStatusEl.classList.add('checking');
+  apiStatusEl.title = 'Checking API status...';
+
+  try {
+    const data = await api('/api/chat/status');
+    apiStatusEl.classList.remove('checking');
+    if (data.configured) {
+      apiStatusEl.classList.add('connected');
+      apiStatusEl.title = 'Anthropic API connected';
+    } else {
+      apiStatusEl.classList.add('disconnected');
+      apiStatusEl.title = 'API key not configured - set ANTHROPIC_API_KEY';
+    }
+  } catch (e) {
+    apiStatusEl.classList.remove('checking');
+    apiStatusEl.classList.add('disconnected');
+    apiStatusEl.title = 'Failed to check API status';
+  }
+}
+
 // Initialize
+checkApiStatus();
 loadStats();
 loadMemories();

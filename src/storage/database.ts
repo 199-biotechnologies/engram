@@ -372,11 +372,11 @@ export class EngramDatabase {
     `).run(id);
   }
 
-  getAllMemories(limit: number = 1000, includeDisabled: boolean = false): Memory[] {
+  getAllMemories(limit: number = 1000, includeDisabled: boolean = false, offset: number = 0): Memory[] {
     const sql = includeDisabled
-      ? "SELECT * FROM memories ORDER BY timestamp DESC LIMIT ?"
-      : "SELECT * FROM memories WHERE disabled = 0 ORDER BY timestamp DESC LIMIT ?";
-    const rows = this.stmt(sql).all(limit) as Record<string, unknown>[];
+      ? "SELECT * FROM memories ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+      : "SELECT * FROM memories WHERE disabled = 0 ORDER BY timestamp DESC LIMIT ? OFFSET ?";
+    const rows = this.stmt(sql).all(limit, offset) as Record<string, unknown>[];
     return rows.map((row) => this.rowToMemory(row));
   }
 

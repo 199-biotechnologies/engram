@@ -19,7 +19,7 @@ import { EngramDatabase } from "./storage/database.js";
 import { KnowledgeGraph } from "./graph/knowledge-graph.js";
 import { createRetriever } from "./retrieval/colbert.js";
 import { HybridSearch } from "./retrieval/hybrid.js";
-import { EngramWebServer } from "./web/server.js";
+import { EngramWebServer, getRunningServerUrl } from "./web/server.js";
 import { Consolidator } from "./consolidation/consolidator.js";
 
 // ============ Configuration ============
@@ -59,6 +59,16 @@ async function initialize(): Promise<void> {
   if (consolidator.isConfigured()) {
     console.error(`[Engram] Consolidation enabled (ANTHROPIC_API_KEY found)`);
   }
+
+  // Start web server automatically (unless another instance is already running)
+  const existingUrl = getRunningServerUrl();
+  if (!existingUrl) {
+    webServer = new EngramWebServer({ db, graph, search });
+    const url = await webServer.start();
+    console.error(`[Engram] Web interface: ${url}`);
+  } else {
+    console.error(`[Engram] Web interface already running: ${existingUrl}`);
+  }
 }
 
 // ============ MCP Server ============
@@ -66,7 +76,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.6.0",
+    version: "0.7.2",
   },
   {
     capabilities: {
@@ -479,6 +489,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "engram_web": {
         const { port = 3847 } = args as { port?: number };
+
+        // Check if a server is already running (from any MCP instance)
+        const existingUrl = getRunningServerUrl();
+        if (existingUrl) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  url: existingUrl,
+                  message: `Web interface already running at ${existingUrl}`,
+                  reused: true,
+                }, null, 2),
+              },
+            ],
+          };
+        }
 
         // Create or reuse web server
         if (!webServer) {

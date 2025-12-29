@@ -6,6 +6,7 @@
 import http from "http";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import { fileURLToPath } from "url";
 import { EngramDatabase } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
@@ -18,6 +19,12 @@ const __dirname = path.dirname(__filename);
 
 const STATIC_DIR = path.join(__dirname, "..", "..", "src", "web", "static");
 
+// Port file for discovery - allows finding the running web server
+const PORT_FILE = path.join(
+  process.env.ENGRAM_DB_PATH?.replace("~", os.homedir()) || path.join(os.homedir(), ".engram"),
+  "web-server.json"
+);
+
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
   ".css": "text/css",
@@ -26,6 +33,31 @@ const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
 };
+
+/**
+ * Get the URL of a currently running Engram web server
+ * Returns null if no server is running
+ */
+export function getRunningServerUrl(): string | null {
+  try {
+    if (fs.existsSync(PORT_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PORT_FILE, "utf-8"));
+      const { port, pid } = data;
+
+      // Check if process is still running
+      try {
+        process.kill(pid, 0); // Signal 0 = check if process exists
+        return `http://localhost:${port}`;
+      } catch {
+        // Process not running, clean up stale file
+        fs.unlinkSync(PORT_FILE);
+      }
+    }
+  } catch {
+    // File doesn't exist or can't be read
+  }
+  return null;
+}
 
 interface WebServerOptions {
   db: EngramDatabase;
@@ -61,21 +93,92 @@ export class EngramWebServer {
       return `http://localhost:${this.port}`;
     }
 
+    // Check if another server is already running
+    const existingUrl = getRunningServerUrl();
+    if (existingUrl) {
+      console.error(`[Engram] Web interface already running at ${existingUrl}`);
+      return existingUrl;
+    }
+
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
-    return new Promise((resolve, reject) => {
-      this.server!.listen(this.port, () => {
-        const url = `http://localhost:${this.port}`;
-        console.error(`[Engram] Web interface running at ${url}`);
-        resolve(url);
-      });
+    // Try to start on preferred port, auto-increment if taken
+    const maxAttempts = 10;
+    let currentPort = this.port;
 
-      this.server!.on("error", reject);
-    });
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          this.server!.once("error", (err: NodeJS.ErrnoException) => {
+            if (err.code === "EADDRINUSE") {
+              currentPort++;
+              resolve(); // Try next port
+            } else {
+              reject(err);
+            }
+          });
+
+          this.server!.listen(currentPort, () => {
+            resolve();
+          });
+        });
+
+        // If we get here without error, server is listening
+        if (this.server!.listening) {
+          this.port = currentPort;
+          const url = `http://localhost:${this.port}`;
+
+          // Write port file for discovery
+          this.writePortFile();
+
+          console.error(`[Engram] Web interface running at ${url}`);
+          return url;
+        }
+      } catch (err) {
+        if (attempt === maxAttempts - 1) {
+          throw err;
+        }
+      }
+    }
+
+    throw new Error(`Could not find available port after ${maxAttempts} attempts`);
+  }
+
+  private writePortFile(): void {
+    try {
+      // Ensure directory exists
+      const dir = path.dirname(PORT_FILE);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      fs.writeFileSync(PORT_FILE, JSON.stringify({
+        port: this.port,
+        pid: process.pid,
+        started: new Date().toISOString(),
+      }));
+    } catch (err) {
+      console.error("[Engram] Failed to write port file:", err);
+    }
+  }
+
+  private removePortFile(): void {
+    try {
+      if (fs.existsSync(PORT_FILE)) {
+        const data = JSON.parse(fs.readFileSync(PORT_FILE, "utf-8"));
+        // Only remove if we wrote it
+        if (data.pid === process.pid) {
+          fs.unlinkSync(PORT_FILE);
+        }
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
   }
 
   stop(): void {
     if (this.server) {
+      this.removePortFile();
       this.server.close();
       this.server = null;
     }
@@ -134,6 +237,7 @@ export class EngramWebServer {
     if (pathname === "/api/memories" && method === "GET") {
       const query = url.searchParams.get("q");
       const limit = parseInt(url.searchParams.get("limit") || "50");
+      const offset = parseInt(url.searchParams.get("offset") || "0");
 
       if (query) {
         const results = await this.search.search(query, { limit });
@@ -145,7 +249,7 @@ export class EngramWebServer {
           })),
         }));
       } else {
-        const memories = this.db.getAllMemories(limit);
+        const memories = this.db.getAllMemories(limit, false, offset);
         res.end(JSON.stringify({ memories }));
       }
       return;
@@ -304,6 +408,59 @@ export class EngramWebServer {
     if (pathname === "/api/chat/clear" && method === "POST") {
       this.chat.clearHistory();
       res.end(JSON.stringify({ success: true }));
+      return;
+    }
+
+    // POST /api/chat/stream - streaming chat with SSE
+    if (pathname === "/api/chat/stream" && method === "POST") {
+      const { message } = body as { message: string };
+      if (!message) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Message is required" }));
+        return;
+      }
+
+      // Check if chat is busy
+      if (this.chat.isBusy()) {
+        res.writeHead(429, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          error: "Chat is busy",
+          queue_length: this.chat.getQueueLength(),
+        }));
+        return;
+      }
+
+      // Set up SSE headers
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      });
+
+      // Stream events to client
+      try {
+        for await (const event of this.chat.chatStream(message)) {
+          const data = JSON.stringify(event);
+          res.write(`data: ${data}\n\n`);
+        }
+      } catch (error) {
+        const errorEvent = {
+          type: "error",
+          content: error instanceof Error ? error.message : String(error),
+        };
+        res.write(`data: ${JSON.stringify(errorEvent)}\n\n`);
+      }
+
+      res.end();
+      return;
+    }
+
+    // GET /api/chat/queue - check queue status
+    if (pathname === "/api/chat/queue" && method === "GET") {
+      res.end(JSON.stringify({
+        busy: this.chat.isBusy(),
+        queue_length: this.chat.getQueueLength(),
+      }));
       return;
     }
 
