@@ -119,6 +119,37 @@ export interface RetrievalLog {
   processed: boolean;      // Has this been used for learning?
 }
 
+/**
+ * Consolidation checkpoint for safe backlog processing
+ * Enables resume capability and progress tracking
+ */
+export interface ConsolidationCheckpoint {
+  id: string;
+  run_id: string;              // Unique ID for this consolidation run
+  phase: "episodes" | "memories" | "decay" | "cleanup" | "complete";
+  batches_completed: number;
+  batches_total: number;
+  memories_processed: number;
+  episodes_processed: number;
+  digests_created: number;
+  contradictions_found: number;
+  tokens_used: number;
+  estimated_cost_usd: number;
+  started_at: Date;
+  updated_at: Date;
+  completed_at: Date | null;
+  error: string | null;
+}
+
+/**
+ * Consolidation configuration for budget and rate limits
+ */
+export interface ConsolidationConfig {
+  key: string;
+  value: string;
+  updated_at: Date;
+}
+
 export class EngramDatabase {
   private db: Database.Database;
   private stmtCache: Map<string, Database.Statement> = new Map();
@@ -339,6 +370,48 @@ export class EngramDatabase {
       CREATE INDEX IF NOT EXISTS idx_retrieval_logs_session ON retrieval_logs(session_id);
       CREATE INDEX IF NOT EXISTS idx_retrieval_logs_recall ON retrieval_logs(recall_id);
       CREATE INDEX IF NOT EXISTS idx_retrieval_logs_processed ON retrieval_logs(processed);
+    `);
+
+    // Consolidation checkpoints for safe backlog processing
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS consolidation_checkpoints (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL UNIQUE,
+        phase TEXT NOT NULL CHECK(phase IN ('episodes', 'memories', 'decay', 'cleanup', 'complete')),
+        batches_completed INTEGER DEFAULT 0,
+        batches_total INTEGER DEFAULT 0,
+        memories_processed INTEGER DEFAULT 0,
+        episodes_processed INTEGER DEFAULT 0,
+        digests_created INTEGER DEFAULT 0,
+        contradictions_found INTEGER DEFAULT 0,
+        tokens_used INTEGER DEFAULT 0,
+        estimated_cost_usd REAL DEFAULT 0,
+        started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME,
+        error TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON consolidation_checkpoints(run_id);
+      CREATE INDEX IF NOT EXISTS idx_checkpoints_phase ON consolidation_checkpoints(phase);
+    `);
+
+    // Consolidation configuration for budget and rate limits
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS consolidation_config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Default configuration values
+      INSERT OR IGNORE INTO consolidation_config (key, value) VALUES
+        ('daily_budget_usd', '5.0'),
+        ('max_batches_per_run', '5'),
+        ('delay_between_calls_ms', '2000'),
+        ('recovery_mode_threshold', '100'),
+        ('error_rate_threshold', '0.3'),
+        ('empty_digest_threshold', '0.2');
     `);
   }
 
@@ -1339,6 +1412,195 @@ export class EngramDatabase {
       WHERE processed = 1 AND timestamp < datetime('now', '-' || ? || ' days')
     `).run(daysOld);
     return result.changes;
+  }
+
+  // ============ Consolidation Checkpoints ============
+
+  /**
+   * Create a new consolidation checkpoint
+   */
+  createCheckpoint(runId: string, phase: ConsolidationCheckpoint["phase"], batchesTotal: number): ConsolidationCheckpoint {
+    const id = randomUUID();
+    this.db.prepare(`
+      INSERT INTO consolidation_checkpoints (id, run_id, phase, batches_total)
+      VALUES (?, ?, ?, ?)
+    `).run(id, runId, phase, batchesTotal);
+    return this.getCheckpoint(runId)!;
+  }
+
+  /**
+   * Get checkpoint by run_id
+   */
+  getCheckpoint(runId: string): ConsolidationCheckpoint | null {
+    const row = this.stmt("SELECT * FROM consolidation_checkpoints WHERE run_id = ?").get(runId) as Record<string, unknown> | undefined;
+    return row ? this.rowToCheckpoint(row) : null;
+  }
+
+  /**
+   * Get the latest incomplete checkpoint (for resume)
+   */
+  getIncompleteCheckpoint(): ConsolidationCheckpoint | null {
+    const row = this.stmt(`
+      SELECT * FROM consolidation_checkpoints
+      WHERE completed_at IS NULL AND error IS NULL
+      ORDER BY started_at DESC LIMIT 1
+    `).get() as Record<string, unknown> | undefined;
+    return row ? this.rowToCheckpoint(row) : null;
+  }
+
+  /**
+   * Update checkpoint progress
+   */
+  updateCheckpoint(
+    runId: string,
+    updates: Partial<Pick<ConsolidationCheckpoint,
+      "phase" | "batches_completed" | "batches_total" | "memories_processed" |
+      "episodes_processed" | "digests_created" | "contradictions_found" |
+      "tokens_used" | "estimated_cost_usd" | "error"
+    >>
+  ): ConsolidationCheckpoint | null {
+    const sets: string[] = ["updated_at = CURRENT_TIMESTAMP"];
+    const values: unknown[] = [];
+
+    if (updates.phase !== undefined) {
+      sets.push("phase = ?");
+      values.push(updates.phase);
+    }
+    if (updates.batches_completed !== undefined) {
+      sets.push("batches_completed = ?");
+      values.push(updates.batches_completed);
+    }
+    if (updates.batches_total !== undefined) {
+      sets.push("batches_total = ?");
+      values.push(updates.batches_total);
+    }
+    if (updates.memories_processed !== undefined) {
+      sets.push("memories_processed = ?");
+      values.push(updates.memories_processed);
+    }
+    if (updates.episodes_processed !== undefined) {
+      sets.push("episodes_processed = ?");
+      values.push(updates.episodes_processed);
+    }
+    if (updates.digests_created !== undefined) {
+      sets.push("digests_created = ?");
+      values.push(updates.digests_created);
+    }
+    if (updates.contradictions_found !== undefined) {
+      sets.push("contradictions_found = ?");
+      values.push(updates.contradictions_found);
+    }
+    if (updates.tokens_used !== undefined) {
+      sets.push("tokens_used = ?");
+      values.push(updates.tokens_used);
+    }
+    if (updates.estimated_cost_usd !== undefined) {
+      sets.push("estimated_cost_usd = ?");
+      values.push(updates.estimated_cost_usd);
+    }
+    if (updates.error !== undefined) {
+      sets.push("error = ?");
+      values.push(updates.error);
+    }
+
+    values.push(runId);
+    this.db.prepare(`UPDATE consolidation_checkpoints SET ${sets.join(", ")} WHERE run_id = ?`).run(...values);
+    return this.getCheckpoint(runId);
+  }
+
+  /**
+   * Mark checkpoint as complete
+   */
+  completeCheckpoint(runId: string): void {
+    this.db.prepare(`
+      UPDATE consolidation_checkpoints
+      SET phase = 'complete', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE run_id = ?
+    `).run(runId);
+  }
+
+  /**
+   * Get recent checkpoints for reporting
+   */
+  getRecentCheckpoints(limit: number = 10): ConsolidationCheckpoint[] {
+    const rows = this.stmt(`
+      SELECT * FROM consolidation_checkpoints
+      ORDER BY started_at DESC LIMIT ?
+    `).all(limit) as Record<string, unknown>[];
+    return rows.map(r => this.rowToCheckpoint(r));
+  }
+
+  /**
+   * Get total spending in the last 24 hours
+   */
+  getDailySpending(): number {
+    const row = this.stmt(`
+      SELECT COALESCE(SUM(estimated_cost_usd), 0) as total
+      FROM consolidation_checkpoints
+      WHERE started_at >= datetime('now', '-1 day')
+    `).get() as { total: number };
+    return row.total;
+  }
+
+  // ============ Consolidation Config ============
+
+  /**
+   * Get a config value
+   */
+  getConfig(key: string): string | null {
+    const row = this.stmt("SELECT value FROM consolidation_config WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  /**
+   * Get a config value as number
+   */
+  getConfigNumber(key: string, defaultValue: number): number {
+    const value = this.getConfig(key);
+    return value ? parseFloat(value) : defaultValue;
+  }
+
+  /**
+   * Set a config value
+   */
+  setConfig(key: string, value: string): void {
+    this.db.prepare(`
+      INSERT INTO consolidation_config (key, value, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+    `).run(key, value, value);
+  }
+
+  /**
+   * Get all config values
+   */
+  getAllConfig(): Record<string, string> {
+    const rows = this.stmt("SELECT key, value FROM consolidation_config").all() as Array<{ key: string; value: string }>;
+    const config: Record<string, string> = {};
+    for (const row of rows) {
+      config[row.key] = row.value;
+    }
+    return config;
+  }
+
+  private rowToCheckpoint(row: Record<string, unknown>): ConsolidationCheckpoint {
+    return {
+      id: row.id as string,
+      run_id: row.run_id as string,
+      phase: row.phase as ConsolidationCheckpoint["phase"],
+      batches_completed: row.batches_completed as number,
+      batches_total: row.batches_total as number,
+      memories_processed: row.memories_processed as number,
+      episodes_processed: row.episodes_processed as number,
+      digests_created: row.digests_created as number,
+      contradictions_found: row.contradictions_found as number,
+      tokens_used: row.tokens_used as number,
+      estimated_cost_usd: row.estimated_cost_usd as number,
+      started_at: new Date(row.started_at as string),
+      updated_at: new Date(row.updated_at as string),
+      completed_at: row.completed_at ? new Date(row.completed_at as string) : null,
+      error: row.error as string | null,
+    };
   }
 
   // ============ Statistics ============

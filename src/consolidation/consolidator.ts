@@ -16,6 +16,7 @@ import { EngramDatabase, Memory, Digest, Episode } from "../storage/database.js"
 import { getAnthropicApiKey } from "../settings.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
+import { ConsolidationPlan, BacklogAssessment, ConsolidationProgress } from "./plan.js";
 
 const CONSOLIDATION_SYSTEM = `You are a high-quality memory consolidation system for a personal AI assistant. Your goal is to create comprehensive, nuanced digests that preserve the richness of human experience and relationships.
 
@@ -616,42 +617,365 @@ Respond with JSON only.`;
   }
 
   /**
-   * Run full consolidation cycle (episodes → memories → digests)
-   * This is the "sleep cycle" that should run periodically
+   * Assess current backlog and return a plan
    */
-  async runSleepCycle(): Promise<{
+  assessBacklog(): BacklogAssessment {
+    const plan = new ConsolidationPlan(this.db);
+    return plan.assessBacklog();
+  }
+
+  /**
+   * Run full consolidation cycle with safety SOP
+   * This is the "sleep cycle" that should run periodically
+   *
+   * SOP (Standard Operating Procedure):
+   * 1. Assess backlog and check budget
+   * 2. Check for incomplete runs to resume
+   * 3. Create checkpoint for tracking
+   * 4. Process with rate limiting and validation
+   * 5. Check rollback triggers after each batch
+   * 6. Mark complete or fail with error
+   */
+  async runSleepCycle(options: {
+    force?: boolean;      // Ignore budget limits
+    maxBatches?: number;  // Override max batches
+  } = {}): Promise<{
     episodesProcessed: number;
     memoriesCreated: number;
     digestsCreated: number;
     contradictionsFound: number;
     connectionsDecayed: number;
     logsCleanedUp: number;
+    tokensUsed: number;
+    estimatedCost: number;
+    aborted: boolean;
+    abortReason?: string;
   }> {
-    console.error("[Consolidator] Starting sleep cycle...");
+    const plan = new ConsolidationPlan(this.db);
 
-    // Step 1: Process episodes into memories
-    const episodeResult = await this.consolidateEpisodes();
-    console.error(`[Consolidator] Episodes: ${episodeResult.episodesProcessed} → ${episodeResult.memoriesCreated} memories`);
+    // Check for incomplete run to resume
+    const incomplete = plan.checkForResume();
+    if (incomplete) {
+      console.error(`[Consolidator] Resuming incomplete run ${incomplete.run_id} from phase ${incomplete.phase}`);
+      plan.resumeFrom(incomplete);
+    }
 
-    // Step 2: Consolidate memories into digests
-    const memoryResult = await this.consolidate();
-    console.error(`[Consolidator] Memories: ${memoryResult.memoriesProcessed} → ${memoryResult.digestsCreated} digests`);
+    // Assess backlog
+    const assessment = plan.assessBacklog();
+    console.error(`[Consolidator] Assessment: ${assessment.unconsolidatedEpisodes} episodes, ${assessment.unconsolidatedMemories} memories`);
+    console.error(`[Consolidator] Budget: $${assessment.dailySpent.toFixed(2)} / $${assessment.dailyBudget.toFixed(2)} (remaining: $${assessment.budgetRemaining.toFixed(2)})`);
 
-    // Step 3: Decay unused Hebbian connections (memories that haven't fired together recently)
-    const connectionsDecayed = this.db.decayConnections(30, 0.9);
-    console.error(`[Consolidator] Connections decayed: ${connectionsDecayed}`);
+    if (assessment.isRecoveryMode) {
+      console.error(`[Consolidator] RECOVERY MODE: Large backlog detected, processing conservatively`);
+    }
 
-    // Step 4: Clean up old retrieval logs
-    const logsCleanedUp = this.db.cleanupRetrievalLogs(7);
-    console.error(`[Consolidator] Retrieval logs cleaned: ${logsCleanedUp}`);
+    // Check if we can proceed
+    if (!options.force && !assessment.canProceed) {
+      console.error(`[Consolidator] Budget exceeded, skipping consolidation`);
+      return {
+        episodesProcessed: 0,
+        memoriesCreated: 0,
+        digestsCreated: 0,
+        contradictionsFound: 0,
+        connectionsDecayed: 0,
+        logsCleanedUp: 0,
+        tokensUsed: 0,
+        estimatedCost: 0,
+        aborted: true,
+        abortReason: "Daily budget exceeded",
+      };
+    }
+
+    const maxBatches = options.maxBatches ?? assessment.recommendedBatches;
+    let totalTokens = 0;
+    let totalCost = 0;
+    let aborted = false;
+    let abortReason: string | undefined;
+
+    // Create checkpoint
+    const totalBatches = assessment.phases
+      .filter(p => p.phase === "episodes" || p.phase === "memories")
+      .reduce((sum, p) => sum + Math.min(p.batchCount, maxBatches), 0);
+
+    if (!incomplete) {
+      plan.createCheckpoint("episodes", totalBatches);
+    }
+
+    console.error(`[Consolidator] Starting sleep cycle (max ${maxBatches} batches per phase)...`);
+
+    // ============ Phase 1: Episodes → Memories ============
+    let episodesProcessed = incomplete?.episodes_processed || 0;
+    let memoriesCreated = 0;
+    let entitiesCreated = 0;
+
+    if (assessment.unconsolidatedEpisodes >= 4 && !aborted) {
+      plan.updateProgress({ phase: "episodes" });
+      console.error(`[Consolidator] Phase 1: Processing episodes...`);
+
+      const episodeBatchSize = 20;
+      const episodes = plan.getPrioritizedEpisodes(maxBatches * episodeBatchSize);
+
+      // Group by session
+      const sessionGroups = new Map<string, Episode[]>();
+      for (const ep of episodes) {
+        const existing = sessionGroups.get(ep.session_id) || [];
+        existing.push(ep);
+        sessionGroups.set(ep.session_id, existing);
+      }
+
+      let batchIndex = 0;
+      for (const [sessionId, sessionEpisodes] of sessionGroups) {
+        if (batchIndex >= maxBatches) break;
+        if (sessionEpisodes.length < 2) continue;
+
+        try {
+          // Rate limiting delay
+          if (batchIndex > 0) {
+            await plan.delay();
+          }
+
+          const result = await this.extractMemoriesFromEpisodes(sessionEpisodes);
+          plan.recordApiCall(result !== null);
+
+          if (result && result.memories.length > 0) {
+            for (const mem of result.memories) {
+              const memory = this.db.createMemory(
+                mem.content,
+                "episode_consolidation",
+                mem.importance,
+                {
+                  eventTime: mem.event_time ? new Date(mem.event_time) : undefined,
+                  emotionalWeight: mem.emotional_weight,
+                }
+              );
+              memoriesCreated++;
+
+              if (this.search) {
+                await this.search.indexMemory(memory);
+              }
+
+              if (this.graph) {
+                for (const ent of mem.entities || []) {
+                  const entity = this.graph.getOrCreateEntity(
+                    ent.name,
+                    ent.type as "person" | "place" | "concept" | "event" | "organization"
+                  );
+                  this.db.addObservation(entity.id, mem.content, memory.id, 1.0);
+                  entitiesCreated++;
+                }
+
+                for (const rel of mem.relationships || []) {
+                  try {
+                    const fromEntity = this.graph.getOrCreateEntity(rel.from, "person");
+                    const toEntity = this.graph.getOrCreateEntity(rel.to, "person");
+                    this.graph.relate(fromEntity.name, toEntity.name, rel.type);
+                  } catch {
+                    // Skip invalid relationships
+                  }
+                }
+              }
+            }
+          }
+
+          this.db.markEpisodesConsolidated(sessionEpisodes.map(e => e.id));
+          episodesProcessed += sessionEpisodes.length;
+          batchIndex++;
+
+          // Estimate tokens (Haiku)
+          const batchTokens = 3000; // Conservative estimate
+          totalTokens += batchTokens;
+          totalCost += plan.calculateCost("haiku", 2000, 1000);
+
+          plan.updateProgress({
+            batchesCompleted: batchIndex,
+            episodesProcessed,
+            tokensUsed: totalTokens,
+            estimatedCost: totalCost,
+          });
+
+          // Check rollback triggers
+          const triggers = plan.checkRollbackTriggers();
+          const fired = triggers.filter(t => t.triggered);
+          if (fired.length > 0) {
+            aborted = true;
+            abortReason = fired.map(t => t.message).join("; ");
+            console.error(`[Consolidator] ROLLBACK TRIGGERED: ${abortReason}`);
+            break;
+          }
+
+        } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          plan.recordError(errMsg);
+          plan.recordApiCall(false);
+          console.error(`[Consolidator] Episode batch failed: ${errMsg}`);
+        }
+      }
+
+      console.error(`[Consolidator] Episodes: ${episodesProcessed} → ${memoriesCreated} memories`);
+    }
+
+    // ============ Phase 2: Memories → Digests ============
+    let digestsCreated = incomplete?.digests_created || 0;
+    let contradictionsFound = incomplete?.contradictions_found || 0;
+    let memoriesConsolidated = incomplete?.memories_processed || 0;
+
+    if (assessment.unconsolidatedMemories >= 5 && !aborted) {
+      plan.updateProgress({ phase: "memories" });
+      console.error(`[Consolidator] Phase 2: Consolidating memories...`);
+
+      const batchSize = 15;
+      const memories = plan.getPrioritizedMemories(maxBatches * batchSize);
+
+      for (let i = 0; i < memories.length && !aborted; i += batchSize) {
+        if (i / batchSize >= maxBatches) break;
+
+        const batch = memories.slice(i, i + batchSize);
+        if (batch.length < 3) break;
+
+        try {
+          // Rate limiting delay
+          if (i > 0) {
+            await plan.delay();
+          }
+
+          const result = await this.consolidateBatch(batch);
+          plan.recordApiCall(result !== null);
+          plan.recordDigest(result === null || !result.digest);
+
+          if (result) {
+            const memoryIds = batch.map(m => m.id);
+            const periodStart = new Date(Math.min(...batch.map(m => m.timestamp.getTime())));
+            const periodEnd = new Date(Math.max(...batch.map(m => m.timestamp.getTime())));
+
+            this.db.createDigest(result.digest, 1, memoryIds, {
+              topic: result.topic,
+              periodStart,
+              periodEnd,
+            });
+            digestsCreated++;
+            memoriesConsolidated += batch.length;
+
+            for (const c of result.contradictions) {
+              if (c.memory_ids.length >= 2) {
+                const [idA, idB] = c.memory_ids.slice(0, 2);
+                const memA = batch.find(m => m.id === idA);
+                const memB = batch.find(m => m.id === idB);
+
+                if (memA && memB) {
+                  this.db.createContradiction(memA.id, memB.id, c.description);
+                  contradictionsFound++;
+                }
+              }
+            }
+          }
+
+          // Estimate tokens (Opus with thinking)
+          const batchTokens = 15000; // Conservative estimate
+          totalTokens += batchTokens;
+          totalCost += plan.calculateCost("opus", 3000, 2000, 10000);
+
+          plan.updateProgress({
+            batchesCompleted: (i / batchSize) + 1,
+            memoriesProcessed: memoriesConsolidated,
+            digestsCreated,
+            contradictionsFound,
+            tokensUsed: totalTokens,
+            estimatedCost: totalCost,
+          });
+
+          // Check rollback triggers
+          const triggers = plan.checkRollbackTriggers();
+          const fired = triggers.filter(t => t.triggered);
+          if (fired.length > 0) {
+            aborted = true;
+            abortReason = fired.map(t => t.message).join("; ");
+            console.error(`[Consolidator] ROLLBACK TRIGGERED: ${abortReason}`);
+            break;
+          }
+
+        } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          plan.recordError(errMsg);
+          plan.recordApiCall(false);
+          console.error(`[Consolidator] Memory batch failed: ${errMsg}`);
+        }
+      }
+
+      console.error(`[Consolidator] Memories: ${memoriesConsolidated} → ${digestsCreated} digests`);
+    }
+
+    // ============ Phase 3: Decay connections ============
+    let connectionsDecayed = 0;
+    if (!aborted) {
+      plan.updateProgress({ phase: "decay" });
+      connectionsDecayed = this.db.decayConnections(30, 0.9);
+      console.error(`[Consolidator] Connections decayed: ${connectionsDecayed}`);
+    }
+
+    // ============ Phase 4: Cleanup ============
+    let logsCleanedUp = 0;
+    if (!aborted) {
+      plan.updateProgress({ phase: "cleanup" });
+      logsCleanedUp = this.db.cleanupRetrievalLogs(7);
+      console.error(`[Consolidator] Retrieval logs cleaned: ${logsCleanedUp}`);
+    }
+
+    // Mark complete or failed
+    if (aborted) {
+      plan.fail(abortReason || "Unknown error");
+    } else {
+      plan.complete();
+    }
+
+    console.error(`[Consolidator] Sleep cycle complete. Tokens: ${totalTokens}, Cost: $${totalCost.toFixed(4)}`);
 
     return {
-      episodesProcessed: episodeResult.episodesProcessed,
-      memoriesCreated: episodeResult.memoriesCreated,
-      digestsCreated: memoryResult.digestsCreated,
-      contradictionsFound: memoryResult.contradictionsFound,
+      episodesProcessed,
+      memoriesCreated,
+      digestsCreated,
+      contradictionsFound,
       connectionsDecayed,
       logsCleanedUp,
+      tokensUsed: totalTokens,
+      estimatedCost: totalCost,
+      aborted,
+      abortReason,
     };
+  }
+
+  /**
+   * Get consolidation progress for the current/latest run
+   */
+  getConsolidationProgress(): ConsolidationProgress | null {
+    const plan = new ConsolidationPlan(this.db);
+    const checkpoint = plan.checkForResume();
+    if (checkpoint) {
+      plan.resumeFrom(checkpoint);
+      return plan.getProgress();
+    }
+
+    // Get most recent completed run
+    const recent = this.db.getRecentCheckpoints(1);
+    if (recent.length > 0) {
+      return {
+        runId: recent[0].run_id,
+        phase: recent[0].phase,
+        batchesCompleted: recent[0].batches_completed,
+        batchesTotal: recent[0].batches_total,
+        memoriesProcessed: recent[0].memories_processed,
+        episodesProcessed: recent[0].episodes_processed,
+        digestsCreated: recent[0].digests_created,
+        contradictionsFound: recent[0].contradictions_found,
+        tokensUsed: recent[0].tokens_used,
+        estimatedCost: recent[0].estimated_cost_usd,
+        errors: recent[0].error ? [recent[0].error] : [],
+        startedAt: recent[0].started_at,
+        elapsedMs: recent[0].completed_at
+          ? recent[0].completed_at.getTime() - recent[0].started_at.getTime()
+          : Date.now() - recent[0].started_at.getTime(),
+      };
+    }
+
+    return null;
   }
 }
