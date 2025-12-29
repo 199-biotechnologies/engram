@@ -1,6 +1,6 @@
 /**
  * Chat Handler for Engram Web Interface
- * Uses Claude Haiku 4.5 with tools for entity/memory management
+ * Uses Claude Opus 4.5 with tools for entity/memory management
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -384,11 +384,10 @@ export class ChatHandler {
       }
 
       let continueLoop = true;
-      let fullResponse = "";
 
       while (continueLoop) {
         const stream = this.client.messages.stream({
-          model: "claude-haiku-4-5-20241022",
+          model: "claude-opus-4-5-20251101",
           max_tokens: 1024,
           system: SYSTEM_PROMPT,
           tools: TOOLS,
@@ -409,25 +408,13 @@ export class ChatHandler {
             }
           } else if (event.type === "content_block_delta") {
             if (event.delta.type === "text_delta") {
-              fullResponse += event.delta.text;
               yield { type: "text", content: event.delta.text };
             } else if (event.delta.type === "input_json_delta" && currentToolUse) {
               currentToolUse.input += event.delta.partial_json;
             }
           } else if (event.type === "content_block_stop") {
-            if (currentToolUse) {
-              // Execute the tool
-              let toolInput: Record<string, unknown> = {};
-              try {
-                toolInput = JSON.parse(currentToolUse.input || "{}");
-              } catch {
-                toolInput = {};
-              }
-
-              const result = await this.executeTool(currentToolUse.name, toolInput);
-              yield { type: "tool_end", tool: currentToolUse.name, result };
-              currentToolUse = null;
-            }
+            // Don't execute tools here - wait for finalMessage to avoid double execution
+            currentToolUse = null;
           }
         }
 
@@ -435,7 +422,7 @@ export class ChatHandler {
         const finalMessage = await stream.finalMessage();
 
         if (finalMessage.stop_reason === "tool_use") {
-          // Process tool results and continue
+          // Process tool results (execute only once, here)
           const toolUseBlocks = finalMessage.content.filter(
             (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
           );
@@ -443,6 +430,7 @@ export class ChatHandler {
           const toolResults: Anthropic.ToolResultBlockParam[] = [];
           for (const toolUse of toolUseBlocks) {
             const result = await this.executeTool(toolUse.name, toolUse.input as Record<string, unknown>);
+            yield { type: "tool_end", tool: toolUse.name, result };
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolUse.id,
@@ -499,7 +487,7 @@ export class ChatHandler {
       }
 
       let response = await this.client.messages.create({
-        model: "claude-haiku-4-5-20241022",
+        model: "claude-opus-4-5-20251101",
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
         tools: TOOLS,
@@ -534,7 +522,7 @@ export class ChatHandler {
 
         // Continue the conversation
         response = await this.client.messages.create({
-          model: "claude-haiku-4-5-20241022",
+          model: "claude-opus-4-5-20251101",
           max_tokens: 1024,
           system: SYSTEM_PROMPT,
           tools: TOOLS,
