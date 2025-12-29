@@ -9,22 +9,22 @@ import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
 import { getAnthropicApiKey } from "../settings.js";
 
-// Tool definitions for Claude
+// Tool definitions for Claude - optimized for LLM consumption
 const TOOLS: Anthropic.Tool[] = [
   {
     name: "list_entities",
-    description: "List all entities in the knowledge graph. Use this to see what people, organizations, and places are stored.",
+    description: "Returns array of {name, type, id}. Filters: type (person|organization|place), limit. Default limit=50.",
     input_schema: {
       type: "object" as const,
       properties: {
         type: {
           type: "string",
           enum: ["person", "organization", "place"],
-          description: "Filter by entity type (optional)",
+          description: "Filter: person, organization, or place",
         },
         limit: {
-          type: "number",
-          description: "Maximum number of entities to return (default: 50)",
+          type: "integer",
+          description: "Max results (default: 50)",
         },
       },
       required: [],
@@ -32,13 +32,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "get_entity",
-    description: "Get detailed information about an entity including its observations and relationships.",
+    description: "Returns {name, type, observations[], relationships_from[], relationships_to[]} or {error}.",
     input_schema: {
       type: "object" as const,
       properties: {
         name: {
           type: "string",
-          description: "The entity name to look up",
+          description: "Exact entity name (case-sensitive)",
         },
       },
       required: ["name"],
@@ -46,13 +46,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "delete_entity",
-    description: "Delete an entity and all its observations and relationships. Use this to remove incorrect or duplicate entities.",
+    description: "Permanently removes entity + all observations + all relationships. Returns {success, deleted} or {error}.",
     input_schema: {
       type: "object" as const,
       properties: {
         name: {
           type: "string",
-          description: "The entity name to delete",
+          description: "Exact entity name to delete",
         },
       },
       required: ["name"],
@@ -60,17 +60,17 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "merge_entities",
-    description: "Merge one entity into another. All observations and relationships from the source will be moved to the target, then the source is deleted. Use this to fix duplicates.",
+    description: "Moves all data from 'merge' into 'keep', then deletes 'merge'. Use for deduplication. Returns {success, kept, merged, observations_moved, relations_moved} or {error}.",
     input_schema: {
       type: "object" as const,
       properties: {
         keep: {
           type: "string",
-          description: "The entity name to keep (target)",
+          description: "Entity name to preserve (target)",
         },
         merge: {
           type: "string",
-          description: "The entity name to merge and delete (source)",
+          description: "Entity name to merge then delete (source)",
         },
       },
       required: ["keep", "merge"],
@@ -78,17 +78,17 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "rename_entity",
-    description: "Rename an entity to a new name.",
+    description: "Changes entity name. Returns {success, old_name, new_name} or {error}.",
     input_schema: {
       type: "object" as const,
       properties: {
         old_name: {
           type: "string",
-          description: "Current entity name",
+          description: "Current exact name",
         },
         new_name: {
           type: "string",
-          description: "New entity name",
+          description: "New name",
         },
       },
       required: ["old_name", "new_name"],
@@ -96,7 +96,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "delete_relationship",
-    description: "Delete a relationship between two entities.",
+    description: "Removes specific relationship. All 3 params must match exactly. Returns {success, deleted} or {error}.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -110,7 +110,7 @@ const TOOLS: Anthropic.Tool[] = [
         },
         type: {
           type: "string",
-          description: "Relationship type (e.g., 'works_at', 'knows')",
+          description: "Relationship type (e.g., works_at, knows, lives_in)",
         },
       },
       required: ["from", "to", "type"],
@@ -118,17 +118,17 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "search_memories",
-    description: "Search through stored memories.",
+    description: "Hybrid BM25+semantic search. Returns {results[{id, content, timestamp, score}], count}.",
     input_schema: {
       type: "object" as const,
       properties: {
         query: {
           type: "string",
-          description: "Search query",
+          description: "Search query (keywords or natural language)",
         },
         limit: {
-          type: "number",
-          description: "Maximum results (default: 10)",
+          type: "integer",
+          description: "Max results (default: 10)",
         },
       },
       required: ["query"],
@@ -136,13 +136,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "delete_memory",
-    description: "Delete a memory by its ID (soft-delete, can be recovered).",
+    description: "Soft-delete (recoverable). Returns {success, disabled_id} or {error}.",
     input_schema: {
       type: "object" as const,
       properties: {
         id: {
           type: "string",
-          description: "The memory ID to delete",
+          description: "Memory UUID",
         },
       },
       required: ["id"],
@@ -150,13 +150,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "edit_memory",
-    description: "Edit an existing memory's content or importance.",
+    description: "Updates content and/or importance. Returns {success, memory_id, updated_fields[]} or {error}.",
     input_schema: {
       type: "object" as const,
       properties: {
         id: {
           type: "string",
-          description: "The memory ID to edit",
+          description: "Memory UUID",
         },
         content: {
           type: "string",
@@ -164,7 +164,9 @@ const TOOLS: Anthropic.Tool[] = [
         },
         importance: {
           type: "number",
-          description: "New importance (0-1): 0.9=core identity, 0.8=major, 0.5=normal, 0.3=minor",
+          minimum: 0,
+          maximum: 1,
+          description: "0-1: 0.9=identity, 0.8=major, 0.5=normal, 0.3=minor",
         },
       },
       required: ["id"],
@@ -172,17 +174,19 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_memory",
-    description: "Create a new memory. Use for storing user information, preferences, or facts.",
+    description: "Stores new memory. Returns {success, memory_id, content}.",
     input_schema: {
       type: "object" as const,
       properties: {
         content: {
           type: "string",
-          description: "The information to store",
+          description: "Information to store",
         },
         importance: {
           type: "number",
-          description: "0-1 score: 0.9=core identity, 0.8=major, 0.5=normal (default), 0.3=minor",
+          minimum: 0,
+          maximum: 1,
+          description: "0-1: 0.9=identity, 0.8=major, 0.5=normal (default), 0.3=minor",
         },
       },
       required: ["content"],
@@ -190,13 +194,13 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_entity",
-    description: "Create a new entity (person, organization, or place).",
+    description: "Creates new entity. Returns {success, entity_id, name, type} or {error} if exists.",
     input_schema: {
       type: "object" as const,
       properties: {
         name: {
           type: "string",
-          description: "The entity name",
+          description: "Entity name",
         },
         type: {
           type: "string",
@@ -209,7 +213,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "create_relationship",
-    description: "Create a relationship between two entities.",
+    description: "Links two entities. Auto-creates entities as 'person' if missing. Returns {success, relationship}.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -223,7 +227,7 @@ const TOOLS: Anthropic.Tool[] = [
         },
         type: {
           type: "string",
-          description: "Relationship type (e.g., 'works_at', 'lives_in', 'knows', 'sibling_of')",
+          description: "Relationship type (e.g., works_at, lives_in, knows, sibling_of, parent_of)",
         },
       },
       required: ["from", "to", "type"],
@@ -231,7 +235,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "find_duplicates",
-    description: "Find potential duplicate entities that could be merged.",
+    description: "Detects similar entity names. Returns {groups[{keep, duplicates[]}], total_duplicates}.",
     input_schema: {
       type: "object" as const,
       properties: {},
@@ -240,7 +244,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "auto_tidy",
-    description: "Automatically merge all detected duplicate entities.",
+    description: "Auto-merges all detected duplicates. Returns {entities_merged, observations_moved, relations_moved}.",
     input_schema: {
       type: "object" as const,
       properties: {},
@@ -430,11 +434,13 @@ export class ChatHandler {
           const toolResults: Anthropic.ToolResultBlockParam[] = [];
           for (const toolUse of toolUseBlocks) {
             const result = await this.executeTool(toolUse.name, toolUse.input as Record<string, unknown>);
+            const isError = typeof result === "object" && result !== null && "error" in result;
             yield { type: "tool_end", tool: toolUse.name, result };
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolUse.id,
               content: JSON.stringify(result),
+              is_error: isError,
             });
           }
 
@@ -503,10 +509,12 @@ export class ChatHandler {
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
         for (const toolUse of toolUseBlocks) {
           const result = await this.executeTool(toolUse.name, toolUse.input as Record<string, unknown>);
+          const isError = typeof result === "object" && result !== null && "error" in result;
           toolResults.push({
             type: "tool_result",
             tool_use_id: toolUse.id,
             content: JSON.stringify(result),
+            is_error: isError,
           });
         }
 
