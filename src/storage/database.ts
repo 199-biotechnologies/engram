@@ -315,6 +315,34 @@ export class EngramDatabase {
       CREATE INDEX IF NOT EXISTS idx_digest_sources_memory ON digest_sources(memory_id);
     `);
 
+    // FTS5 for digest BM25 search
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS digests_fts USING fts5(
+        content,
+        topic,
+        content='digests',
+        content_rowid='rowid'
+      );
+
+      -- Triggers to keep FTS in sync
+      CREATE TRIGGER IF NOT EXISTS digests_ai AFTER INSERT ON digests BEGIN
+        INSERT INTO digests_fts(rowid, content, topic) VALUES (NEW.rowid, NEW.content, COALESCE(NEW.topic, ''));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS digests_ad AFTER DELETE ON digests BEGIN
+        INSERT INTO digests_fts(digests_fts, rowid, content, topic) VALUES('delete', OLD.rowid, OLD.content, COALESCE(OLD.topic, ''));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS digests_au AFTER UPDATE ON digests BEGIN
+        INSERT INTO digests_fts(digests_fts, rowid, content, topic) VALUES('delete', OLD.rowid, OLD.content, COALESCE(OLD.topic, ''));
+        INSERT INTO digests_fts(rowid, content, topic) VALUES (NEW.rowid, NEW.content, COALESCE(NEW.topic, ''));
+      END;
+    `);
+
+    // Rebuild FTS5 index to sync with content table (necessary for existing databases)
+    // This is idempotent and fast for small tables
+    this.db.exec(`INSERT INTO digests_fts(digests_fts) VALUES('rebuild');`);
+
     // Contradictions table (detected conflicts)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS contradictions (
@@ -637,6 +665,23 @@ export class EngramDatabase {
 
     return rows.map((row) => ({
       ...this.rowToMemory(row),
+      score: row.score as number,
+    }));
+  }
+
+  searchDigestsBM25(query: string, limit: number = 10): Array<Digest & { score: number }> {
+    const escapedQuery = this.escapeFTS5Query(query);
+    const rows = this.stmt(`
+      SELECT d.*, bm25(digests_fts) as score
+      FROM digests_fts fts
+      JOIN digests d ON fts.rowid = d.rowid
+      WHERE digests_fts MATCH ?
+      ORDER BY score
+      LIMIT ?
+    `).all(escapedQuery, limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      ...this.rowToDigest(row),
       score: row.score as number,
     }));
   }

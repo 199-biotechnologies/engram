@@ -4,7 +4,7 @@
  * Enhanced with temporal decay and salience scoring
  */
 
-import { EngramDatabase, Memory } from "../storage/database.js";
+import { EngramDatabase, Memory, Digest } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { ColBERTRetriever, SimpleRetriever, SearchResult, Document } from "./colbert.js";
 
@@ -20,8 +20,15 @@ export interface HybridSearchResult {
   };
 }
 
+export interface DigestSearchResult {
+  digest: Digest;
+  score: number;
+  key_memories: Memory[];  // 2-3 source memories that best support this digest
+}
+
 export interface HybridSearchResponse {
   results: HybridSearchResult[];
+  digests: DigestSearchResult[];  // Relevant synthesized context
   recall_id: string;  // For LLM feedback
   connected_memories: Array<{
     memory: Memory;
@@ -179,10 +186,14 @@ export class HybridSearch {
     if (allCandidateIds.size === 0) {
       return {
         results: [],
+        digests: [],
         recall_id: recallId,
         connected_memories: [],
       };
     }
+
+    // Search digests via BM25 (top 3 relevant digests)
+    const digestResults = this.searchDigests(query, 3);
 
     // Create rankings for RRF
     const rankings: Map<string, { bm25?: number; semantic?: number; graph?: number; connected?: number }> = new Map();
@@ -335,11 +346,60 @@ export class HybridSearch {
       }
     }
 
+    // TOKEN EFFICIENCY: If digests are returned, reduce memory count
+    // Digest provides context (synthesis), memories provide evidence (specifics)
+    // Return fewer memories when we have good digest coverage
+    let finalResults = results;
+    if (digestResults.length > 0) {
+      // Get IDs of memories already covered by digests as key_memories
+      const coveredByDigests = new Set<string>();
+      digestResults.forEach(d => d.key_memories.forEach(m => coveredByDigests.add(m.id)));
+
+      // Keep memories not already shown as key_memories in digests
+      // Also limit to fewer since digests provide the context
+      const maxMemoriesWithDigests = Math.max(2, Math.floor(limit / 2));
+      finalResults = results
+        .filter(r => !coveredByDigests.has(r.memory.id))
+        .slice(0, maxMemoriesWithDigests);
+    }
+
     return {
-      results,
+      results: finalResults,
+      digests: digestResults,
       recall_id: recallId,
       connected_memories: connectedMemories,
     };
+  }
+
+  /**
+   * Search digests via BM25 and return with key source memories
+   * Returns top N digests with 2-3 representative source memories each
+   */
+  private searchDigests(query: string, limit: number): DigestSearchResult[] {
+    try {
+      const digestHits = this.db.searchDigestsBM25(query, limit);
+
+      return digestHits.map(hit => {
+        // Get source memories for this digest, take top 3 most relevant
+        const sources = this.db.getDigestSources(hit.id);
+        // Sort by importance and recency, take best 3
+        const keyMemories = sources
+          .sort((a, b) => {
+            const scoreA = (a.importance || 0.5) + (a.access_count || 0) * 0.1;
+            const scoreB = (b.importance || 0.5) + (b.access_count || 0) * 0.1;
+            return scoreB - scoreA;
+          })
+          .slice(0, 3);
+
+        return {
+          digest: hit,
+          score: Math.abs(hit.score),  // BM25 returns negative scores
+          key_memories: keyMemories,
+        };
+      });
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -355,7 +415,7 @@ export class HybridSearch {
     // Get the original retrieval log
     const log = this.db.getRetrievalLog(recallId);
     if (!log) {
-      return { results: [], recall_id: recallId, connected_memories: [] };
+      return { results: [], digests: [], recall_id: recallId, connected_memories: [] };
     }
 
     // Search again with relaxed parameters

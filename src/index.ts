@@ -496,7 +496,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           includeGraph: include_graph,
         });
 
+        // Format digests (synthesized context - these provide broad understanding)
+        const digestsFormatted = response.digests.map((d) => ({
+          type: "digest" as const,
+          id: d.digest.id,
+          level: d.digest.level,  // 1=session, 2=topic, 3=entity
+          topic: d.digest.topic,
+          content: d.digest.content,
+          source_count: d.digest.source_count,
+          period: {
+            start: d.digest.period_start.toISOString(),
+            end: d.digest.period_end.toISOString(),
+          },
+          relevance_score: d.score.toFixed(4),
+          // Key evidence - specific memories supporting this synthesis
+          key_memories: d.key_memories.map((m) => ({
+            id: m.id,
+            content: m.content,
+            timestamp: m.timestamp.toISOString(),
+          })),
+        }));
+
         const formatted = response.results.map((r) => ({
+          type: "memory" as const,
           id: r.memory.id,
           content: r.memory.content,
           source: r.memory.source,
@@ -511,6 +533,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Format connected memories (Hebbian associations)
         const connectedFormatted = response.connected_memories.map((c) => ({
+          type: "connected" as const,
           id: c.memory.id,
           content: c.memory.content,
           connected_to: c.connected_to,
@@ -524,10 +547,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify({
                 recall_id: response.recall_id,  // For memory_feedback
                 query,
+                // Digests first - they provide synthesized context
+                digests: digestsFormatted,
+                digests_count: digestsFormatted.length,
+                // Then individual memories for specific evidence
                 results: formatted,
                 count: formatted.length,
                 connected_memories: connectedFormatted,
-                hint: formatted.length > 0 ? "Call memory_feedback with useful_memory_ids after answering" : undefined,
+                hint: formatted.length > 0 || digestsFormatted.length > 0
+                  ? "Call memory_feedback with useful_memory_ids after answering"
+                  : undefined,
               }, null, 2),
             },
           ],
