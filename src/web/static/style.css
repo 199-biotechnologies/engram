@@ -1056,6 +1056,128 @@ body.chat-open main {
   color: var(--text-primary);
 }
 
+/* Settings View */
+.settings-container {
+  max-width: 600px;
+}
+
+.settings-section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.settings-section h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.settings-row label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  min-width: 80px;
+}
+
+.input-group {
+  display: flex;
+  flex: 1;
+  gap: 0.5rem;
+}
+
+.input-group input {
+  flex: 1;
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: 0.875rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.input-group input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.input-group button {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.input-group button:hover {
+  background: var(--border);
+  transform: none;
+  box-shadow: none;
+}
+
+.primary-btn {
+  background: var(--accent) !important;
+  color: white !important;
+}
+
+.primary-btn:hover {
+  background: var(--accent-hover) !important;
+}
+
+.danger-btn {
+  background: var(--bg-tertiary) !important;
+  color: var(--text-secondary) !important;
+}
+
+.danger-btn:hover {
+  background: var(--danger) !important;
+  color: white !important;
+}
+
+.status-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.625rem;
+  border-radius: var(--radius);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+.status-badge.configured {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+.status-badge.not-configured {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.help-text {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  margin-top: 1rem;
+}
+
+.help-text a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.help-text a:hover {
+  text-decoration: underline;
+}
+
 /* Responsive */
 @media (max-width: 640px) {
   header {

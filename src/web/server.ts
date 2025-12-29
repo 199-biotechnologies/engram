@@ -13,6 +13,7 @@ import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
 import { ChatHandler } from "./chat-handler.js";
 import { Consolidator } from "../consolidation/consolidator.js";
+import { loadSettings, saveSettings, hasAnthropicApiKey } from "../settings.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -379,13 +380,58 @@ export class EngramWebServer {
       return;
     }
 
+    // ============ Settings Endpoints ============
+
+    // GET /api/settings - get current settings (without exposing full API key)
+    if (pathname === "/api/settings" && method === "GET") {
+      const settings = loadSettings();
+      res.end(JSON.stringify({
+        has_api_key: hasAnthropicApiKey(),
+        api_key_preview: settings.anthropic_api_key
+          ? `${settings.anthropic_api_key.slice(0, 12)}...${settings.anthropic_api_key.slice(-4)}`
+          : null,
+        api_key_source: settings.anthropic_api_key
+          ? "settings"
+          : process.env.ANTHROPIC_API_KEY
+            ? "environment"
+            : null,
+      }));
+      return;
+    }
+
+    // POST /api/settings - update settings
+    if (pathname === "/api/settings" && method === "POST") {
+      const { anthropic_api_key } = body as { anthropic_api_key?: string };
+
+      if (anthropic_api_key !== undefined) {
+        const settings = loadSettings();
+        if (anthropic_api_key === "") {
+          // Clear the API key
+          delete settings.anthropic_api_key;
+        } else {
+          settings.anthropic_api_key = anthropic_api_key;
+        }
+        saveSettings(settings);
+
+        // Refresh the chat client
+        this.chat.refreshClient();
+        this.consolidator = new Consolidator(this.db); // Reinit consolidator
+      }
+
+      res.end(JSON.stringify({
+        success: true,
+        configured: this.chat.isConfigured(),
+      }));
+      return;
+    }
+
     // GET /api/chat/status - check if chat is configured
     if (pathname === "/api/chat/status" && method === "GET") {
       res.end(JSON.stringify({
         configured: this.chat.isConfigured(),
         message: this.chat.isConfigured()
           ? "Chat is ready"
-          : "Set ANTHROPIC_API_KEY environment variable to enable chat",
+          : "Configure API key in Settings",
       }));
       return;
     }

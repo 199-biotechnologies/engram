@@ -14,6 +14,7 @@
       <button class="nav-btn" data-view="entities">Entities</button>
       <button class="nav-btn" data-view="graph">Graph</button>
       <button class="nav-btn" data-view="consolidation">Consolidation</button>
+      <button class="nav-btn" data-view="settings">Settings</button>
     </nav>
     <div class="stats" id="stats"></div>
     <div class="api-status" id="api-status" title="Anthropic API Status">
@@ -57,6 +58,40 @@
     <!-- Graph View -->
     <section id="graph-view" class="view">
       <div id="graph-container"></div>
+    </section>
+
+    <!-- Settings View -->
+    <section id="settings-view" class="view">
+      <div class="settings-container">
+        <h2>Settings</h2>
+
+        <div class="settings-section">
+          <h3>API Configuration</h3>
+          <p class="section-desc">Configure your Anthropic API key to enable Chat and Consolidation features.</p>
+
+          <div class="settings-row" id="api-key-status">
+            <label>Status:</label>
+            <span class="status-badge" id="api-status-badge">Checking...</span>
+          </div>
+
+          <div class="settings-row">
+            <label for="api-key-input">API Key:</label>
+            <div class="input-group">
+              <input type="password" id="api-key-input" placeholder="sk-ant-api03-..." autocomplete="off">
+              <button type="button" id="toggle-key-visibility" title="Show/hide">👁</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <button id="save-api-key" class="primary-btn">Save API Key</button>
+            <button id="clear-api-key" class="danger-btn">Clear</button>
+          </div>
+
+          <p class="help-text">
+            Get your API key from <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>
+          </p>
+        </div>
+      </div>
     </section>
 
     <!-- Consolidation View -->

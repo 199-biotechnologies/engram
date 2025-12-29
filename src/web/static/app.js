@@ -17,6 +17,7 @@ const views = {
   entities: document.getElementById('entities-view'),
   graph: document.getElementById('graph-view'),
   consolidation: document.getElementById('consolidation-view'),
+  settings: document.getElementById('settings-view'),
 };
 
 const statsEl = document.getElementById('stats');
@@ -352,6 +353,7 @@ function switchView(view) {
   if (view === 'entities') loadEntities(entityTypeFilter.value);
   if (view === 'graph') loadGraph();
   if (view === 'consolidation') loadConsolidation();
+  if (view === 'settings') loadSettings();
 }
 
 // ============ Consolidation ============
@@ -879,6 +881,104 @@ async function checkApiStatus() {
     apiStatusEl.classList.add('disconnected');
     apiStatusEl.title = 'Failed to check API status';
   }
+}
+
+// ============ Settings ============
+
+const apiStatusBadge = document.getElementById('api-status-badge');
+const apiKeyInput = document.getElementById('api-key-input');
+const toggleKeyVisibility = document.getElementById('toggle-key-visibility');
+const saveApiKeyBtn = document.getElementById('save-api-key');
+const clearApiKeyBtn = document.getElementById('clear-api-key');
+
+async function loadSettings() {
+  try {
+    const settings = await api('/api/settings');
+    updateSettingsUI(settings);
+  } catch (e) {
+    console.error('Failed to load settings', e);
+  }
+}
+
+function updateSettingsUI(settings) {
+  if (settings.has_api_key) {
+    apiStatusBadge.textContent = `Configured (${settings.api_key_source})`;
+    apiStatusBadge.className = 'status-badge configured';
+    apiKeyInput.placeholder = settings.api_key_preview || 'sk-ant-api03-...';
+    apiKeyInput.value = '';
+  } else {
+    apiStatusBadge.textContent = 'Not configured';
+    apiStatusBadge.className = 'status-badge not-configured';
+    apiKeyInput.placeholder = 'sk-ant-api03-...';
+  }
+}
+
+if (toggleKeyVisibility) {
+  toggleKeyVisibility.addEventListener('click', () => {
+    const type = apiKeyInput.type === 'password' ? 'text' : 'password';
+    apiKeyInput.type = type;
+    toggleKeyVisibility.textContent = type === 'password' ? '👁' : '🙈';
+  });
+}
+
+if (saveApiKeyBtn) {
+  saveApiKeyBtn.addEventListener('click', async () => {
+    const apiKey = apiKeyInput.value.trim();
+    if (!apiKey) {
+      alert('Please enter an API key');
+      return;
+    }
+
+    if (!apiKey.startsWith('sk-ant-')) {
+      alert('Invalid API key format. Should start with sk-ant-');
+      return;
+    }
+
+    try {
+      saveApiKeyBtn.disabled = true;
+      saveApiKeyBtn.textContent = 'Saving...';
+
+      const result = await api('/api/settings', {
+        method: 'POST',
+        body: { anthropic_api_key: apiKey },
+      });
+
+      if (result.success) {
+        apiKeyInput.value = '';
+        await loadSettings();
+        await checkApiStatus();
+        alert('API key saved successfully!');
+      } else {
+        alert('Failed to save API key');
+      }
+    } catch (e) {
+      console.error('Failed to save API key', e);
+      alert('Error saving API key');
+    } finally {
+      saveApiKeyBtn.disabled = false;
+      saveApiKeyBtn.textContent = 'Save API Key';
+    }
+  });
+}
+
+if (clearApiKeyBtn) {
+  clearApiKeyBtn.addEventListener('click', async () => {
+    if (!confirm('Are you sure you want to clear the API key?')) return;
+
+    try {
+      clearApiKeyBtn.disabled = true;
+      await api('/api/settings', {
+        method: 'POST',
+        body: { anthropic_api_key: '' },
+      });
+      await loadSettings();
+      await checkApiStatus();
+    } catch (e) {
+      console.error('Failed to clear API key', e);
+    } finally {
+      clearApiKeyBtn.disabled = false;
+    }
+  });
 }
 
 // Initialize

@@ -13,6 +13,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { EngramDatabase, Memory, Digest, Episode } from "../storage/database.js";
+import { getAnthropicApiKey } from "../settings.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
 
@@ -124,7 +125,7 @@ export class Consolidator {
     this.graph = graph || null;
     this.search = search || null;
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = getAnthropicApiKey();
     if (apiKey) {
       this.client = new Anthropic({ apiKey });
     }

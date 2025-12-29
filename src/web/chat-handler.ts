@@ -7,6 +7,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { EngramDatabase, Entity, Memory } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
+import { getAnthropicApiKey } from "../settings.js";
 
 // Tool definitions for Claude
 const TOOLS: Anthropic.Tool[] = [
@@ -290,9 +291,19 @@ export class ChatHandler {
     this.graph = options.graph;
     this.search = options.search;
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    // Initialize client from settings or env var
+    this.refreshClient();
+  }
+
+  /**
+   * Refresh the Anthropic client (call after settings change)
+   */
+  refreshClient(): void {
+    const apiKey = getAnthropicApiKey();
     if (apiKey) {
       this.client = new Anthropic({ apiKey });
+    } else {
+      this.client = null;
     }
   }
 
