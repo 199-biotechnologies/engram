@@ -253,16 +253,34 @@ const TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const SYSTEM_PROMPT = `You are a helpful assistant for managing Engram, a personal memory system. You help users:
-- View and search their memories
-- Manage entities (people, organizations, places)
-- Fix incorrect relationships
-- Merge duplicate entities
-- Delete incorrect data
+const SYSTEM_PROMPT = `You are a helpful assistant for managing Engram, a personal memory system. You have extended thinking capabilities - use them to reason carefully about complex requests.
 
-Be concise and helpful. When making changes, confirm what you did. If asked to do something destructive, confirm first unless the user is explicit.
+## Your Capabilities
+- Search and retrieve memories using semantic + keyword hybrid search
+- Manage entities (people, organizations, places) - create, rename, merge, delete
+- Manage relationships between entities
+- Create, edit, and delete memories
+- Find and auto-merge duplicate entities
 
-When listing entities or memories, format them clearly. Use the tools available to you.`;
+## Critical Behaviors
+1. **Always search first**: When asked about anything that might be in memory, use search_memories FIRST before answering. Don't assume you know the answer.
+2. **Multi-step reasoning**: For complex requests, break them into steps. Search, analyze results, then act.
+3. **Confirm destructive actions**: Unless the user is explicit, ask before deleting or merging data.
+4. **Be precise**: Use exact entity names when making changes. Check spelling.
+5. **Context awareness**: Remember what the user discussed earlier in this conversation.
+
+## Response Style
+- Be concise but thorough
+- Format lists and results clearly using markdown
+- When you find relevant memories, quote the key parts
+- If you're uncertain, say so and explain your reasoning
+
+## Tool Usage
+- search_memories: Use liberally - hybrid search is fast and effective
+- list_entities: Good for getting an overview before specific operations
+- get_entity: Get full details including observations and relationships
+- find_duplicates: Run this when asked about data quality or cleanup
+- auto_tidy: Only use when user explicitly wants automatic cleanup`;
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -271,7 +289,7 @@ interface ChatMessage {
 
 // Stream event types for SSE
 export interface StreamEvent {
-  type: "text" | "tool_start" | "tool_end" | "error" | "done";
+  type: "text" | "thinking" | "tool_start" | "tool_end" | "error" | "done";
   content?: string;
   tool?: string;
   result?: unknown;
@@ -308,7 +326,12 @@ export class ChatHandler {
       if (!this.client) {
         console.error("[Engram] ChatHandler: API key configured");
       }
-      this.client = new Anthropic({ apiKey });
+      this.client = new Anthropic({
+        apiKey,
+        defaultHeaders: {
+          "anthropic-beta": "interleaved-thinking-2025-05-14",
+        },
+      });
     } else {
       this.client = null;
     }
@@ -392,13 +415,18 @@ export class ChatHandler {
       while (continueLoop) {
         const stream = this.client.messages.stream({
           model: "claude-opus-4-5-20251101",
-          max_tokens: 1024,
+          max_tokens: 16000,
           system: SYSTEM_PROMPT,
           tools: TOOLS,
           messages: this.conversationHistory,
+          thinking: {
+            type: "enabled",
+            budget_tokens: 8000,
+          },
         });
 
         let currentToolUse: { id: string; name: string; input: string } | null = null;
+        let isThinking = false;
 
         for await (const event of stream) {
           if (event.type === "content_block_start") {
@@ -409,16 +437,23 @@ export class ChatHandler {
                 input: "",
               };
               yield { type: "tool_start", tool: event.content_block.name };
+            } else if (event.content_block.type === "thinking") {
+              isThinking = true;
+              yield { type: "thinking", content: "" };
             }
           } else if (event.type === "content_block_delta") {
             if (event.delta.type === "text_delta") {
               yield { type: "text", content: event.delta.text };
+            } else if (event.delta.type === "thinking_delta") {
+              // Stream thinking content for transparency
+              yield { type: "thinking", content: event.delta.thinking };
             } else if (event.delta.type === "input_json_delta" && currentToolUse) {
               currentToolUse.input += event.delta.partial_json;
             }
           } else if (event.type === "content_block_stop") {
             // Don't execute tools here - wait for finalMessage to avoid double execution
             currentToolUse = null;
+            isThinking = false;
           }
         }
 
@@ -494,10 +529,14 @@ export class ChatHandler {
 
       let response = await this.client.messages.create({
         model: "claude-opus-4-5-20251101",
-        max_tokens: 1024,
+        max_tokens: 16000,
         system: SYSTEM_PROMPT,
         tools: TOOLS,
         messages: this.conversationHistory,
+        thinking: {
+          type: "enabled",
+          budget_tokens: 8000,
+        },
       });
 
       // Handle tool use loop
@@ -531,10 +570,14 @@ export class ChatHandler {
         // Continue the conversation
         response = await this.client.messages.create({
           model: "claude-opus-4-5-20251101",
-          max_tokens: 1024,
+          max_tokens: 16000,
           system: SYSTEM_PROMPT,
           tools: TOOLS,
           messages: this.conversationHistory,
+          thinking: {
+            type: "enabled",
+            budget_tokens: 8000,
+          },
         });
       }
 
