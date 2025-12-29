@@ -14,6 +14,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import path from "path";
 import os from "os";
+import fs from "fs";
 
 import { EngramDatabase } from "./storage/database.js";
 import { KnowledgeGraph } from "./graph/knowledge-graph.js";
@@ -29,6 +30,99 @@ const DB_PATH = process.env.ENGRAM_DB_PATH
   : path.join(os.homedir(), ".engram");
 
 const DB_FILE = path.join(DB_PATH, "engram.db");
+const PID_FILE = path.join(DB_PATH, "engram.pid");
+
+// ============ Zombie Prevention ============
+
+/**
+ * Kill any existing engram process and clean up stale PID file
+ */
+function cleanupZombies(): void {
+  try {
+    if (fs.existsSync(PID_FILE)) {
+      const oldPid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
+      if (oldPid && oldPid !== process.pid) {
+        try {
+          // Check if process exists
+          process.kill(oldPid, 0);
+          // It exists, kill it
+          console.error(`[Engram] Killing old instance (PID ${oldPid})`);
+          process.kill(oldPid, "SIGTERM");
+        } catch {
+          // Process doesn't exist, that's fine
+        }
+      }
+      fs.unlinkSync(PID_FILE);
+    }
+  } catch (error) {
+    console.error("[Engram] Error cleaning up zombies:", error);
+  }
+}
+
+/**
+ * Write our PID file
+ */
+function writePidFile(): void {
+  try {
+    // Ensure directory exists
+    if (!fs.existsSync(DB_PATH)) {
+      fs.mkdirSync(DB_PATH, { recursive: true });
+    }
+    fs.writeFileSync(PID_FILE, String(process.pid));
+  } catch (error) {
+    console.error("[Engram] Error writing PID file:", error);
+  }
+}
+
+/**
+ * Clean up on exit
+ */
+function cleanup(): void {
+  try {
+    if (fs.existsSync(PID_FILE)) {
+      const storedPid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
+      if (storedPid === process.pid) {
+        fs.unlinkSync(PID_FILE);
+      }
+    }
+    if (webServer) {
+      webServer.stop();
+    }
+    if (db) {
+      db.close();
+    }
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
+// Register signal handlers early
+process.on("SIGTERM", () => {
+  console.error("[Engram] Received SIGTERM, shutting down...");
+  cleanup();
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.error("[Engram] Received SIGINT, shutting down...");
+  cleanup();
+  process.exit(0);
+});
+
+process.on("exit", cleanup);
+
+// Detect when parent process (Claude) dies by monitoring stdin
+process.stdin.on("end", () => {
+  console.error("[Engram] stdin closed, parent process likely died. Shutting down...");
+  cleanup();
+  process.exit(0);
+});
+
+process.stdin.on("close", () => {
+  console.error("[Engram] stdin closed, shutting down...");
+  cleanup();
+  process.exit(0);
+});
 
 // ============ Initialize Components ============
 
@@ -753,12 +847,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ============ Main ============
 
 async function main() {
+  // Kill any zombie instances before starting
+  cleanupZombies();
+  writePidFile();
+
   await initialize();
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  console.error("[Engram] MCP server running on stdio");
+  console.error(`[Engram] MCP server running on stdio (PID ${process.pid})`);
 }
 
 main().catch((error) => {
