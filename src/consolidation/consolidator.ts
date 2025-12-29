@@ -596,6 +596,8 @@ Respond with JSON only.`;
     memoriesCreated: number;
     digestsCreated: number;
     contradictionsFound: number;
+    connectionsDecayed: number;
+    logsCleanedUp: number;
   }> {
     console.error("[Consolidator] Starting sleep cycle...");
 
@@ -607,11 +609,21 @@ Respond with JSON only.`;
     const memoryResult = await this.consolidate();
     console.error(`[Consolidator] Memories: ${memoryResult.memoriesProcessed} → ${memoryResult.digestsCreated} digests`);
 
+    // Step 3: Decay unused Hebbian connections (memories that haven't fired together recently)
+    const connectionsDecayed = this.db.decayConnections(30, 0.9);
+    console.error(`[Consolidator] Connections decayed: ${connectionsDecayed}`);
+
+    // Step 4: Clean up old retrieval logs
+    const logsCleanedUp = this.db.cleanupRetrievalLogs(7);
+    console.error(`[Consolidator] Retrieval logs cleaned: ${logsCleanedUp}`);
+
     return {
       episodesProcessed: episodeResult.episodesProcessed,
       memoriesCreated: episodeResult.memoriesCreated,
       digestsCreated: memoryResult.digestsCreated,
       contradictionsFound: memoryResult.contradictionsFound,
+      connectionsDecayed,
+      logsCleanedUp,
     };
   }
 }

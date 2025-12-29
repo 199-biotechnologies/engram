@@ -669,15 +669,15 @@ export class ChatHandler {
         const query = input.query as string;
         const limit = (input.limit as number) || 10;
 
-        const results = await this.search.search(query, { limit });
+        const response = await this.search.search(query, { limit });
         return {
-          results: results.map((r) => ({
+          results: response.results.map((r) => ({
             id: r.memory.id,
             content: r.memory.content.substring(0, 300) + (r.memory.content.length > 300 ? "..." : ""),
             timestamp: r.memory.timestamp.toISOString(),
             score: r.score.toFixed(3),
           })),
-          count: results.length,
+          count: response.results.length,
         };
       }
 

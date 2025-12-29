@@ -87,6 +87,38 @@ export interface Contradiction {
   resolved_at: Date | null;
 }
 
+/**
+ * Hebbian connection between two memories
+ * "Neurons that fire together, wire together"
+ * Strength increases when memories are useful TOGETHER, not just co-retrieved
+ */
+export interface MemoryConnection {
+  id: string;
+  memory_a: string;
+  memory_b: string;
+  strength: number;        // 0-1, how strongly connected
+  co_retrievals: number;   // Times retrieved together
+  co_useful: number;       // Times BOTH were useful together (from LLM feedback)
+  last_fired: Date | null; // Last time this connection was activated
+  created_at: Date;
+}
+
+/**
+ * Log of retrieval sessions for deferred learning
+ * We don't update connections immediately - we batch process after N turns
+ */
+export interface RetrievalLog {
+  id: string;
+  session_id: string;
+  recall_id: string;       // Unique ID for this recall operation
+  query: string;
+  memory_ids: string[];    // All memories retrieved
+  useful_ids: string[] | null; // From LLM feedback (null = no feedback yet)
+  need_more: boolean;      // LLM requested more memories
+  timestamp: Date;
+  processed: boolean;      // Has this been used for learning?
+}
+
 export class EngramDatabase {
   private db: Database.Database;
   private stmtCache: Map<string, Database.Statement> = new Map();
@@ -268,6 +300,45 @@ export class EngramDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_contradictions_entity ON contradictions(entity_id);
       CREATE INDEX IF NOT EXISTS idx_contradictions_resolved ON contradictions(resolved);
+    `);
+
+    // Memory connections table (Hebbian learning)
+    // "Neurons that fire together, wire together"
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_connections (
+        id TEXT PRIMARY KEY,
+        memory_a TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+        memory_b TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+        strength REAL DEFAULT 0.1,
+        co_retrievals INTEGER DEFAULT 0,
+        co_useful INTEGER DEFAULT 0,
+        last_fired DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(memory_a, memory_b)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_connections_memory_a ON memory_connections(memory_a);
+      CREATE INDEX IF NOT EXISTS idx_connections_memory_b ON memory_connections(memory_b);
+      CREATE INDEX IF NOT EXISTS idx_connections_strength ON memory_connections(strength);
+    `);
+
+    // Retrieval logs for deferred learning
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS retrieval_logs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        recall_id TEXT NOT NULL UNIQUE,
+        query TEXT NOT NULL,
+        memory_ids TEXT NOT NULL,
+        useful_ids TEXT,
+        need_more INTEGER DEFAULT 0,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        processed INTEGER DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_retrieval_logs_session ON retrieval_logs(session_id);
+      CREATE INDEX IF NOT EXISTS idx_retrieval_logs_recall ON retrieval_logs(recall_id);
+      CREATE INDEX IF NOT EXISTS idx_retrieval_logs_processed ON retrieval_logs(processed);
     `);
   }
 
@@ -1043,6 +1114,220 @@ export class EngramDatabase {
     return result.changes > 0;
   }
 
+  // ============ Memory Connections (Hebbian Learning) ============
+
+  /**
+   * Get or create a connection between two memories
+   * Always stores with smaller ID first for consistency
+   */
+  getOrCreateConnection(memoryA: string, memoryB: string): MemoryConnection {
+    // Normalize order: smaller ID always first
+    const [a, b] = memoryA < memoryB ? [memoryA, memoryB] : [memoryB, memoryA];
+
+    const existing = this.stmt(
+      "SELECT * FROM memory_connections WHERE memory_a = ? AND memory_b = ?"
+    ).get(a, b) as Record<string, unknown> | undefined;
+
+    if (existing) {
+      return this.rowToConnection(existing);
+    }
+
+    const id = randomUUID();
+    this.db.prepare(`
+      INSERT INTO memory_connections (id, memory_a, memory_b)
+      VALUES (?, ?, ?)
+    `).run(id, a, b);
+
+    return this.getConnection(id)!;
+  }
+
+  getConnection(id: string): MemoryConnection | null {
+    const row = this.stmt("SELECT * FROM memory_connections WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return row ? this.rowToConnection(row) : null;
+  }
+
+  /**
+   * Get all connections for a memory
+   */
+  getMemoryConnections(memoryId: string, minStrength: number = 0): MemoryConnection[] {
+    const rows = this.stmt(`
+      SELECT * FROM memory_connections
+      WHERE (memory_a = ? OR memory_b = ?) AND strength >= ?
+      ORDER BY strength DESC
+    `).all(memoryId, memoryId, minStrength) as Record<string, unknown>[];
+    return rows.map(r => this.rowToConnection(r));
+  }
+
+  /**
+   * Get connected memory IDs for a set of memories
+   */
+  getConnectedMemoryIds(memoryIds: string[], minStrength: number = 0.3, limit: number = 10): string[] {
+    if (memoryIds.length === 0) return [];
+
+    const placeholders = memoryIds.map(() => "?").join(",");
+    const rows = this.db.prepare(`
+      SELECT DISTINCT
+        CASE WHEN memory_a IN (${placeholders}) THEN memory_b ELSE memory_a END as connected_id,
+        strength
+      FROM memory_connections
+      WHERE (memory_a IN (${placeholders}) OR memory_b IN (${placeholders}))
+        AND strength >= ?
+      ORDER BY strength DESC
+      LIMIT ?
+    `).all(...memoryIds, ...memoryIds, ...memoryIds, minStrength, limit) as Array<{ connected_id: string; strength: number }>;
+
+    // Filter out memories that are already in the input set
+    const inputSet = new Set(memoryIds);
+    return rows.map(r => r.connected_id).filter(id => !inputSet.has(id));
+  }
+
+  /**
+   * Record that memories were retrieved together (co-retrieval)
+   */
+  recordCoRetrieval(memoryIds: string[]): void {
+    if (memoryIds.length < 2) return;
+
+    // Update all pairs
+    for (let i = 0; i < memoryIds.length; i++) {
+      for (let j = i + 1; j < memoryIds.length; j++) {
+        const [a, b] = memoryIds[i] < memoryIds[j]
+          ? [memoryIds[i], memoryIds[j]]
+          : [memoryIds[j], memoryIds[i]];
+
+        this.db.prepare(`
+          INSERT INTO memory_connections (id, memory_a, memory_b, co_retrievals, last_fired)
+          VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+          ON CONFLICT(memory_a, memory_b) DO UPDATE SET
+            co_retrievals = co_retrievals + 1,
+            last_fired = CURRENT_TIMESTAMP
+        `).run(randomUUID(), a, b);
+      }
+    }
+  }
+
+  /**
+   * Record that memories were useful together (from LLM feedback)
+   * This is what actually strengthens connections
+   */
+  recordCoUseful(memoryIds: string[]): void {
+    if (memoryIds.length < 2) return;
+
+    for (let i = 0; i < memoryIds.length; i++) {
+      for (let j = i + 1; j < memoryIds.length; j++) {
+        const [a, b] = memoryIds[i] < memoryIds[j]
+          ? [memoryIds[i], memoryIds[j]]
+          : [memoryIds[j], memoryIds[i]];
+
+        // Get current stats to calculate new strength
+        const conn = this.getOrCreateConnection(a, b);
+        const newCoUseful = conn.co_useful + 1;
+        const newCoRetrievals = Math.max(conn.co_retrievals, newCoUseful);
+
+        // Calculate strength with diminishing returns
+        const usefulRatio = newCoUseful / Math.max(1, newCoRetrievals);
+        const diminished = Math.sqrt(usefulRatio);
+        const confidence = Math.min(1, newCoUseful / 3); // Require 3+ co-useful for strong connection
+        const newStrength = diminished * confidence;
+
+        this.db.prepare(`
+          UPDATE memory_connections
+          SET co_useful = ?, strength = ?, last_fired = CURRENT_TIMESTAMP
+          WHERE memory_a = ? AND memory_b = ?
+        `).run(newCoUseful, newStrength, a, b);
+      }
+    }
+  }
+
+  /**
+   * Decay unused connections (called during consolidation)
+   */
+  decayConnections(daysThreshold: number = 30, decayFactor: number = 0.9): number {
+    const result = this.db.prepare(`
+      UPDATE memory_connections
+      SET strength = strength * ?
+      WHERE last_fired < datetime('now', '-' || ? || ' days')
+        AND strength > 0.05
+    `).run(decayFactor, daysThreshold);
+
+    // Clean up very weak connections
+    this.db.prepare(`
+      DELETE FROM memory_connections WHERE strength < 0.05
+    `).run();
+
+    return result.changes;
+  }
+
+  // ============ Retrieval Logs (Deferred Learning) ============
+
+  /**
+   * Log a retrieval for later learning
+   */
+  createRetrievalLog(
+    sessionId: string,
+    recallId: string,
+    query: string,
+    memoryIds: string[]
+  ): RetrievalLog {
+    const id = randomUUID();
+    this.db.prepare(`
+      INSERT INTO retrieval_logs (id, session_id, recall_id, query, memory_ids)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, sessionId, recallId, query, JSON.stringify(memoryIds));
+    return this.getRetrievalLog(recallId)!;
+  }
+
+  getRetrievalLog(recallId: string): RetrievalLog | null {
+    const row = this.stmt("SELECT * FROM retrieval_logs WHERE recall_id = ?").get(recallId) as Record<string, unknown> | undefined;
+    return row ? this.rowToRetrievalLog(row) : null;
+  }
+
+  /**
+   * Update retrieval log with LLM feedback
+   */
+  updateRetrievalFeedback(recallId: string, usefulIds: string[], needMore: boolean): boolean {
+    const result = this.db.prepare(`
+      UPDATE retrieval_logs
+      SET useful_ids = ?, need_more = ?
+      WHERE recall_id = ?
+    `).run(JSON.stringify(usefulIds), needMore ? 1 : 0, recallId);
+    return result.changes > 0;
+  }
+
+  /**
+   * Get unprocessed retrieval logs for learning
+   */
+  getUnprocessedRetrievalLogs(limit: number = 100): RetrievalLog[] {
+    const rows = this.stmt(`
+      SELECT * FROM retrieval_logs
+      WHERE processed = 0 AND useful_ids IS NOT NULL
+      ORDER BY timestamp ASC
+      LIMIT ?
+    `).all(limit) as Record<string, unknown>[];
+    return rows.map(r => this.rowToRetrievalLog(r));
+  }
+
+  /**
+   * Mark retrieval logs as processed
+   */
+  markRetrievalLogsProcessed(ids: string[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    this.db.prepare(`
+      UPDATE retrieval_logs SET processed = 1 WHERE id IN (${placeholders})
+    `).run(...ids);
+  }
+
+  /**
+   * Clean up old retrieval logs
+   */
+  cleanupRetrievalLogs(daysOld: number = 7): number {
+    const result = this.db.prepare(`
+      DELETE FROM retrieval_logs
+      WHERE processed = 1 AND timestamp < datetime('now', '-' || ? || ' days')
+    `).run(daysOld);
+    return result.changes;
+  }
+
   // ============ Statistics ============
 
   getStats(): {
@@ -1172,6 +1457,33 @@ export class EngramDatabase {
       resolution: row.resolution as string | null,
       created_at: new Date(row.created_at as string),
       resolved_at: row.resolved_at ? new Date(row.resolved_at as string) : null,
+    };
+  }
+
+  private rowToConnection(row: Record<string, unknown>): MemoryConnection {
+    return {
+      id: row.id as string,
+      memory_a: row.memory_a as string,
+      memory_b: row.memory_b as string,
+      strength: row.strength as number,
+      co_retrievals: row.co_retrievals as number,
+      co_useful: row.co_useful as number,
+      last_fired: row.last_fired ? new Date(row.last_fired as string) : null,
+      created_at: new Date(row.created_at as string),
+    };
+  }
+
+  private rowToRetrievalLog(row: Record<string, unknown>): RetrievalLog {
+    return {
+      id: row.id as string,
+      session_id: row.session_id as string,
+      recall_id: row.recall_id as string,
+      query: row.query as string,
+      memory_ids: JSON.parse(row.memory_ids as string),
+      useful_ids: row.useful_ids ? JSON.parse(row.useful_ids as string) : null,
+      need_more: Boolean(row.need_more),
+      timestamp: new Date(row.timestamp as string),
+      processed: Boolean(row.processed),
     };
   }
 }

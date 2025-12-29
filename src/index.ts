@@ -76,7 +76,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.7.2",
+    version: "0.8.0",
   },
   {
     capabilities: {
@@ -280,6 +280,37 @@ const TOOLS = [
       openWorldHint: true,  // Calls Anthropic API for consolidation
     },
   },
+  {
+    name: "memory_feedback",
+    description: "Signal which memories from a recall were actually useful. Call AFTER using memories to answer user's question. This enables the memory system to learn which memories help together (Hebbian learning). Optional but improves memory quality over time.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        recall_id: {
+          type: "string",
+          description: "The recall_id from the recall response",
+        },
+        useful_memory_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "IDs of memories that actually helped answer the question. Empty array if none were useful.",
+        },
+        need_more: {
+          type: "boolean",
+          description: "Set true if the memories were insufficient and you need a deeper search with more results",
+          default: false,
+        },
+      },
+      required: ["recall_id", "useful_memory_ids"],
+    },
+    annotations: {
+      title: "Memory Feedback",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
 ];
 
 // List available tools
@@ -366,12 +397,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           include_graph?: boolean;
         };
 
-        const results = await search.search(query, {
+        const response = await search.search(query, {
           limit,
           includeGraph: include_graph,
         });
 
-        const formatted = results.map((r) => ({
+        const formatted = response.results.map((r) => ({
           id: r.memory.id,
           content: r.memory.content,
           source: r.memory.source,
@@ -384,14 +415,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             .join(", "),
         }));
 
+        // Format connected memories (Hebbian associations)
+        const connectedFormatted = response.connected_memories.map((c) => ({
+          id: c.memory.id,
+          content: c.memory.content,
+          connected_to: c.connected_to,
+          connection_strength: c.strength.toFixed(2),
+        }));
+
         return {
           content: [
             {
               type: "text" as const,
               text: JSON.stringify({
+                recall_id: response.recall_id,  // For memory_feedback
                 query,
                 results: formatted,
                 count: formatted.length,
+                connected_memories: connectedFormatted,
+                hint: formatted.length > 0 ? "Call memory_feedback with useful_memory_ids after answering" : undefined,
               }, null, 2),
             },
           ],
@@ -569,6 +611,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 success: true,
                 mode,
                 ...result,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "memory_feedback": {
+        const { recall_id, useful_memory_ids, need_more = false } = args as {
+          recall_id: string;
+          useful_memory_ids: string[];
+          need_more?: boolean;
+        };
+
+        // Update the retrieval log with feedback
+        const updated = db.updateRetrievalFeedback(recall_id, useful_memory_ids, need_more);
+
+        if (!updated) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: false,
+                  error: `Recall ID not found: ${recall_id}`,
+                }),
+              },
+            ],
+          };
+        }
+
+        // If need_more is set, do an expanded search
+        if (need_more) {
+          const expandedResponse = await search.expandSearch(recall_id);
+
+          const formatted = expandedResponse.results.map((r) => ({
+            id: r.memory.id,
+            content: r.memory.content,
+            source: r.memory.source,
+            timestamp: r.memory.timestamp.toISOString(),
+            relevance_score: r.score.toFixed(4),
+            matched_via: Object.entries(r.sources)
+              .filter(([, v]) => v !== undefined)
+              .map(([k]) => k)
+              .join(", "),
+          }));
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  feedback_recorded: true,
+                  useful_count: useful_memory_ids.length,
+                  expanded_search: true,
+                  additional_results: formatted,
+                  additional_count: formatted.length,
+                }, null, 2),
+              },
+            ],
+          };
+        }
+
+        // Process deferred learning if we have enough feedback
+        const unprocessed = db.getUnprocessedRetrievalLogs(50);
+        let learningApplied = 0;
+
+        for (const log of unprocessed) {
+          if (log.useful_ids && log.useful_ids.length >= 2) {
+            // Strengthen connections between useful memories
+            db.recordCoUseful(log.useful_ids);
+            learningApplied++;
+          }
+        }
+
+        if (unprocessed.length > 0) {
+          db.markRetrievalLogsProcessed(unprocessed.map(l => l.id));
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                success: true,
+                feedback_recorded: true,
+                useful_count: useful_memory_ids.length,
+                learning_applied: learningApplied > 0,
+                connections_strengthened: learningApplied,
               }, null, 2),
             },
           ],

@@ -16,7 +16,18 @@ export interface HybridSearchResult {
     bm25?: number;
     semantic?: number;
     graph?: number;
+    connected?: number;  // Rank from Hebbian connections
   };
+}
+
+export interface HybridSearchResponse {
+  results: HybridSearchResult[];
+  recall_id: string;  // For LLM feedback
+  connected_memories: Array<{
+    memory: Memory;
+    connected_to: string;  // ID of the memory it's connected to
+    strength: number;
+  }>;
 }
 
 /**
@@ -74,11 +85,23 @@ function adjustScore(memory: Memory, baseScore: number, now: Date): { adjusted: 
 }
 
 export class HybridSearch {
+  private sessionId: string;
+
   constructor(
     private db: EngramDatabase,
     private graph: KnowledgeGraph,
     private retriever: ColBERTRetriever | SimpleRetriever
-  ) {}
+  ) {
+    // Generate a session ID for this search instance
+    this.sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  /**
+   * Generate a unique recall ID for tracking
+   */
+  private generateRecallId(): string {
+    return `recall_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
 
   /**
    * Search using all available methods and fuse results
@@ -91,20 +114,35 @@ export class HybridSearch {
     options: {
       limit?: number;
       includeGraph?: boolean;
+      includeConnections?: boolean;  // Include Hebbian-connected memories
+      connectionBudget?: number;     // How many results to allocate to connections (default: 30%)
+      minConnectionStrength?: number; // Minimum strength to include connections
       bm25Weight?: number;
       semanticWeight?: number;
       graphWeight?: number;
-      useReranking?: boolean;  // Use ColBERT to rerank BM25 results
+      connectionWeight?: number;     // Weight for connected memories in RRF
+      useReranking?: boolean;        // Use ColBERT to rerank BM25 results
     } = {}
-  ): Promise<HybridSearchResult[]> {
+  ): Promise<HybridSearchResponse> {
     const {
       limit = 10,
       includeGraph = true,
+      includeConnections = true,
+      connectionBudget = 0.3,        // 30% of results can be connected memories
+      minConnectionStrength = 0.3,
       bm25Weight = 1.0,
       semanticWeight = 1.0,
       graphWeight = 0.3,
-      useReranking = true,  // Default: reranking mode for better quality
+      connectionWeight = 0.5,
+      useReranking = true,
     } = options;
+
+    // Generate recall_id for tracking
+    const recallId = this.generateRecallId();
+
+    // Calculate budgets: 70% direct results, 30% connected
+    const directBudget = Math.ceil(limit * (1 - connectionBudget));
+    const connectedBudget = limit - directBudget;
 
     // Fetch more candidates than needed for fusion
     const candidateLimit = Math.max(limit * 3, 30);
@@ -139,11 +177,15 @@ export class HybridSearch {
     graphMemories.forEach(m => allCandidateIds.add(m.id));
 
     if (allCandidateIds.size === 0) {
-      return [];
+      return {
+        results: [],
+        recall_id: recallId,
+        connected_memories: [],
+      };
     }
 
     // Create rankings for RRF
-    const rankings: Map<string, { bm25?: number; semantic?: number; graph?: number }> = new Map();
+    const rankings: Map<string, { bm25?: number; semantic?: number; graph?: number; connected?: number }> = new Map();
 
     // BM25 ranking
     bm25Results.forEach((result, rank) => {
@@ -168,7 +210,7 @@ export class HybridSearch {
 
     // Calculate RRF scores
     const k = 60; // RRF constant
-    const rrfScores: Array<{ id: string; score: number; sources: typeof rankings extends Map<string, infer V> ? V : never }> = [];
+    const rrfScores: Array<{ id: string; score: number; sources: { bm25?: number; semantic?: number; graph?: number; connected?: number } }> = [];
 
     for (const [id, ranks] of rankings) {
       let score = 0;
@@ -204,11 +246,7 @@ export class HybridSearch {
           score: adjusted,
           retention,
           originalScore: score,
-          sources: {
-            bm25: sources.bm25,
-            semantic: sources.semantic,
-            graph: sources.graph,
-          },
+          sources,
         });
       }
     }
@@ -216,9 +254,44 @@ export class HybridSearch {
     // Re-sort by adjusted score (accounts for recency/stability)
     adjustedResults.sort((a, b) => b.score - a.score);
 
-    // Take top results and update access counts
+    // Take top direct results
+    const directResults = adjustedResults.slice(0, directBudget);
+    const directIds = directResults.map(r => r.memory.id);
+
+    // Find Hebbian-connected memories (not already in direct results)
+    let connectedMemories: Array<{ memory: Memory; connected_to: string; strength: number }> = [];
+    if (includeConnections && directIds.length > 0) {
+      const connectedIds = this.db.getConnectedMemoryIds(directIds, minConnectionStrength, connectedBudget * 2);
+
+      for (const connId of connectedIds) {
+        if (directIds.includes(connId)) continue;
+
+        const memory = this.db.getMemory(connId);
+        if (!memory) continue;
+
+        // Find which direct result this is connected to
+        const connections = this.db.getMemoryConnections(connId, minConnectionStrength);
+        const connectedTo = connections.find(c =>
+          directIds.includes(c.memory_a === connId ? c.memory_b : c.memory_a)
+        );
+
+        if (connectedTo) {
+          connectedMemories.push({
+            memory,
+            connected_to: connectedTo.memory_a === connId ? connectedTo.memory_b : connectedTo.memory_a,
+            strength: connectedTo.strength,
+          });
+        }
+      }
+
+      // Sort by strength and limit
+      connectedMemories.sort((a, b) => b.strength - a.strength);
+      connectedMemories = connectedMemories.slice(0, connectedBudget);
+    }
+
+    // Build final results (direct + space for connected)
     const results: HybridSearchResult[] = [];
-    for (const result of adjustedResults.slice(0, limit)) {
+    for (const result of directResults) {
       // Update access count (which also increases stability for future searches)
       this.db.touchMemory(result.memory.id);
 
@@ -230,7 +303,71 @@ export class HybridSearch {
       });
     }
 
-    return results;
+    // Add connected memories to results with their own scores
+    for (const { memory, strength } of connectedMemories) {
+      const baseScore = strength * connectionWeight;
+      const { adjusted, retention } = adjustScore(memory, baseScore, now);
+
+      this.db.touchMemory(memory.id);
+
+      results.push({
+        memory,
+        score: adjusted,
+        retention,
+        sources: { connected: 1 },
+      });
+    }
+
+    // Track co-retrieval for Hebbian learning (all result IDs)
+    const allResultIds = results.map(r => r.memory.id);
+    if (allResultIds.length >= 2) {
+      this.db.recordCoRetrieval(allResultIds);
+    }
+
+    // Log this retrieval for deferred learning
+    try {
+      this.db.createRetrievalLog(this.sessionId, recallId, query, allResultIds);
+    } catch {
+      // Ignore duplicate recall_id errors (can happen with rapid queries)
+    }
+
+    return {
+      results,
+      recall_id: recallId,
+      connected_memories: connectedMemories,
+    };
+  }
+
+  /**
+   * Expanded search when LLM needs more memories
+   * Relaxes constraints and follows weaker connections
+   */
+  async expandSearch(
+    recallId: string,
+    options: { additionalLimit?: number } = {}
+  ): Promise<HybridSearchResponse> {
+    const { additionalLimit = 10 } = options;
+
+    // Get the original retrieval log
+    const log = this.db.getRetrievalLog(recallId);
+    if (!log) {
+      return { results: [], recall_id: recallId, connected_memories: [] };
+    }
+
+    // Search again with relaxed parameters
+    const response = await this.search(log.query, {
+      limit: additionalLimit + log.memory_ids.length,
+      includeConnections: true,
+      minConnectionStrength: 0.1,  // Lower threshold
+      connectionBudget: 0.5,       // More connected memories
+    });
+
+    // Filter out memories already returned
+    const existingIds = new Set(log.memory_ids);
+    response.results = response.results.filter(r => !existingIds.has(r.memory.id));
+    response.connected_memories = response.connected_memories.filter(c => !existingIds.has(c.memory.id));
+
+    return response;
   }
 
   /**

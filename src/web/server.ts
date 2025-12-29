@@ -241,9 +241,9 @@ export class EngramWebServer {
       const offset = parseInt(url.searchParams.get("offset") || "0");
 
       if (query) {
-        const results = await this.search.search(query, { limit });
+        const response = await this.search.search(query, { limit });
         res.end(JSON.stringify({
-          memories: results.map(r => ({
+          memories: response.results.map(r => ({
             ...r.memory,
             score: r.score,
             sources: r.sources,
