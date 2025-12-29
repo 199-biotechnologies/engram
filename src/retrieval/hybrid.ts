@@ -102,7 +102,7 @@ export class HybridSearch {
       includeGraph = true,
       bm25Weight = 1.0,
       semanticWeight = 1.0,
-      graphWeight = 0.5,
+      graphWeight = 0.3,
       useReranking = true,  // Default: reranking mode for better quality
     } = options;
 
@@ -258,21 +258,45 @@ export class HybridSearch {
   }
 
   /**
+   * Normalize a word for matching: lowercase, strip punctuation, handle possessives
+   * "John's" → "john", "Paris!" → "paris", "U.S.A." → "usa"
+   */
+  private normalizeWord(word: string): string {
+    return word
+      .toLowerCase()
+      .replace(/'s$/, '')           // Remove possessives: john's → john
+      .replace(/[^\p{L}\p{N}]/gu, '') // Keep only letters/numbers (Unicode-safe)
+      .trim();
+  }
+
+  /**
    * Graph-based search: find known entities in query, traverse graph
+   * Uses normalized word matching to handle punctuation and possessives
    */
   private async searchGraph(query: string): Promise<string[]> {
-    // Find known entities whose names appear in the query
-    const queryLower = query.toLowerCase();
+    // Tokenize and normalize query words
+    const queryWords = query.split(/\s+/)
+      .map(w => this.normalizeWord(w))
+      .filter(w => w.length > 0);
+    const queryWordSet = new Set(queryWords);
+
+    // Find entities whose normalized names match query words
     const allEntities = this.graph.listEntities(undefined, 500);
-    const matchedEntities = allEntities.filter(e =>
-      queryLower.includes(e.name.toLowerCase())
-    );
+    const matchedEntities = allEntities.filter(e => {
+      const entityWords = e.name.split(/\s+/)
+        .map(w => this.normalizeWord(w))
+        .filter(w => w.length > 0);
+      // Entity matches if ALL its words appear in the query
+      // e.g., "john" matches entity "John" but not "John Smith"
+      // e.g., "john's friend" matches entity "John" (possessive handled)
+      return entityWords.every(w => queryWordSet.has(w));
+    });
 
     const memoryIds = new Set<string>();
 
     for (const entity of matchedEntities) {
-      // Find related memory IDs through graph traversal
-      const relatedIds = this.graph.findRelatedMemoryIds(entity.name, 2);
+      // Depth 1: only directly related memories, not transitive connections
+      const relatedIds = this.graph.findRelatedMemoryIds(entity.name, 1);
       relatedIds.forEach(id => memoryIds.add(id));
     }
 

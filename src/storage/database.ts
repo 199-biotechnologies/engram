@@ -19,6 +19,7 @@ export interface Memory {
   last_accessed: Date | null;
   stability: number;         // Ebbinghaus stability score (increases with recalls)
   emotional_weight: number;  // Salience: emotional significance 0-1
+  disabled: boolean;         // Soft-deleted: excluded from search results
 }
 
 /**
@@ -287,6 +288,9 @@ export class EngramDatabase {
     if (!memoryColumns.has("emotional_weight")) {
       this.db.exec("ALTER TABLE memories ADD COLUMN emotional_weight REAL DEFAULT 0.5");
     }
+    if (!memoryColumns.has("disabled")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN disabled INTEGER DEFAULT 0");
+    }
   }
 
   // ============ Memory Operations ============
@@ -322,7 +326,7 @@ export class EngramDatabase {
     return row ? this.rowToMemory(row) : null;
   }
 
-  updateMemory(id: string, updates: Partial<Pick<Memory, "content" | "importance">>): Memory | null {
+  updateMemory(id: string, updates: Partial<Pick<Memory, "content" | "importance" | "disabled">>): Memory | null {
     const sets: string[] = [];
     const values: unknown[] = [];
 
@@ -333,6 +337,10 @@ export class EngramDatabase {
     if (updates.importance !== undefined) {
       sets.push("importance = ?");
       values.push(updates.importance);
+    }
+    if (updates.disabled !== undefined) {
+      sets.push("disabled = ?");
+      values.push(updates.disabled ? 1 : 0);
     }
 
     if (sets.length === 0) return this.getMemory(id);
@@ -364,8 +372,11 @@ export class EngramDatabase {
     `).run(id);
   }
 
-  getAllMemories(limit: number = 1000): Memory[] {
-    const rows = this.stmt("SELECT * FROM memories ORDER BY timestamp DESC LIMIT ?").all(limit) as Record<string, unknown>[];
+  getAllMemories(limit: number = 1000, includeDisabled: boolean = false): Memory[] {
+    const sql = includeDisabled
+      ? "SELECT * FROM memories ORDER BY timestamp DESC LIMIT ?"
+      : "SELECT * FROM memories WHERE disabled = 0 ORDER BY timestamp DESC LIMIT ?";
+    const rows = this.stmt(sql).all(limit) as Record<string, unknown>[];
     return rows.map((row) => this.rowToMemory(row));
   }
 
@@ -475,7 +486,7 @@ export class EngramDatabase {
       SELECT m.*, bm25(memories_fts) as score
       FROM memories_fts fts
       JOIN memories m ON fts.rowid = m.rowid
-      WHERE memories_fts MATCH ?
+      WHERE memories_fts MATCH ? AND m.disabled = 0
       ORDER BY score
       LIMIT ?
     `).all(escapedQuery, limit) as Array<Record<string, unknown>>;
@@ -530,7 +541,7 @@ export class EngramDatabase {
 
   /**
    * Find a similar entity using fuzzy matching
-   * Catches "Boris D" matching "Boris Djordjevic", "John" matching "John Smith"
+   * Catches "John D" matching "John Doe", "Jane" matching "Jane Smith"
    */
   findSimilarEntity(name: string, threshold: number = 0.8): Entity | null {
     const normalizedName = name.toLowerCase().trim();
@@ -576,7 +587,7 @@ export class EngramDatabase {
     // Exact match
     if (full1 === full2) return 1.0;
 
-    // One is prefix of the other (e.g., "Boris" vs "Boris Djordjevic")
+    // One is prefix of the other (e.g., "John" vs "John Doe")
     if (full1.startsWith(full2 + " ") || full2.startsWith(full1 + " ")) {
       return 0.9;
     }
@@ -589,7 +600,7 @@ export class EngramDatabase {
       return 0.7 + (0.2 * shorter / longer);
     }
 
-    // Check for abbreviated names (e.g., "Boris D" vs "Boris Djordjevic")
+    // Check for abbreviated names (e.g., "John D" vs "John Doe")
     if (words1.length >= 2 && words2.length >= 2) {
       const last1 = words1[words1.length - 1];
       const last2 = words2[words2.length - 1];
@@ -1099,6 +1110,7 @@ export class EngramDatabase {
       last_accessed: row.last_accessed ? new Date(row.last_accessed as string) : null,
       stability: (row.stability as number) ?? 1.0,
       emotional_weight: (row.emotional_weight as number) ?? 0.5,
+      disabled: Boolean(row.disabled),
     };
   }
 

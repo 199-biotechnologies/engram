@@ -74,8 +74,8 @@ const EPISODE_EXTRACTION_SYSTEM = `You are extracting structured memories from a
       "importance": 0.5,
       "emotional_weight": 0.5,
       "event_time": "2024-12-01 or null if not mentioned",
-      "entities": [{"name": "Boris", "type": "person"}],
-      "relationships": [{"from": "Boris", "to": "Google", "type": "works_at"}]
+      "entities": [{"name": "John", "type": "person"}],
+      "relationships": [{"from": "John", "to": "Acme Corp", "type": "works_at"}]
     }
   ]
 }

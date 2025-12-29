@@ -81,7 +81,7 @@ const TOOLS = [
   {
     name: "remember",
     description:
-      "Store information with entities and relationships. Extract key people, organizations, and places from the content and pass them as entities. Include relationships between entities when mentioned (e.g., 'works_at', 'lives_in', 'knows').",
+      "Store NEW information the user shares. Extract entities (people, organizations, places) and relationships. Do NOT use for corrections - use edit_memory instead. Do NOT use before checking if info already exists - use recall first.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -91,14 +91,14 @@ const TOOLS = [
         },
         importance: {
           type: "number",
-          description: "0-1 score. Use 0.8+ for key facts (names, preferences, important events), 0.5 for general info, 0.3- for trivial mentions",
+          description: "0-1 score with anchors: 0.9=core identity (name, birthday, family), 0.8=major preferences/life events, 0.6=notable facts, 0.5=general info (default), 0.3=casual mentions, 0.1=trivial/ephemeral",
           minimum: 0,
           maximum: 1,
           default: 0.5,
         },
         emotional_weight: {
           type: "number",
-          description: "0-1 emotional significance. Use 0.8+ for emotionally charged content, celebrations, losses. Affects memory retention.",
+          description: "0-1 emotional significance with anchors: 0.9=major life events (births, deaths, achievements), 0.7=celebrations/disappointments, 0.5=neutral (default), 0.3=mild sentiment, 0.1=purely factual",
           minimum: 0,
           maximum: 1,
           default: 0.5,
@@ -113,7 +113,7 @@ const TOOLS = [
           items: {
             type: "object",
             properties: {
-              name: { type: "string", description: "Entity name (e.g., 'Boris Djordjevic', 'Google', 'Paris')" },
+              name: { type: "string", description: "Entity name (e.g., 'John Smith', 'Google', 'Paris')" },
               type: { type: "string", enum: ["person", "organization", "place"], description: "Entity type" },
             },
             required: ["name", "type"],
@@ -146,7 +146,7 @@ const TOOLS = [
   {
     name: "recall",
     description:
-      "PRIMARY SEARCH TOOL. Use this FIRST when answering any question about stored information. Searches across all memories using semantic understanding, keywords, and knowledge graph connections. Returns relevant memories with context.",
+      "Search stored memories. Use FIRST before answering questions about the user, their preferences, history, or anything previously discussed. Also use before remember to check if information already exists.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -177,13 +177,13 @@ const TOOLS = [
   },
   {
     name: "forget",
-    description: "Delete a specific memory by its ID. Use only when explicitly asked to remove information.",
+    description: "Delete a memory by its ID. Use when user explicitly asks to remove or forget specific stored information. Get the memory ID from recall results first.",
     inputSchema: {
       type: "object" as const,
       properties: {
         id: {
           type: "string",
-          description: "The memory ID to remove",
+          description: "The memory ID to delete (get this from recall results)",
         },
       },
       required: ["id"],
@@ -192,6 +192,37 @@ const TOOLS = [
       title: "Delete Memory",
       readOnlyHint: false,
       destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "edit_memory",
+    description: "Correct or update an existing memory. Use instead of forget+remember when fixing mistakes, updating outdated info, or adjusting importance. Preserves the memory's history and relationships.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        id: {
+          type: "string",
+          description: "The memory ID to edit (get this from recall results)",
+        },
+        content: {
+          type: "string",
+          description: "New content for the memory (replaces existing). Omit to keep current content.",
+        },
+        importance: {
+          type: "number",
+          description: "New importance (0-1): 0.9=core identity, 0.8=major, 0.5=normal, 0.3=minor. Omit to keep current.",
+          minimum: 0,
+          maximum: 1,
+        },
+      },
+      required: ["id"],
+    },
+    annotations: {
+      title: "Edit Memory",
+      readOnlyHint: false,
+      destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
     },
@@ -219,7 +250,7 @@ const TOOLS = [
   },
   {
     name: "consolidate",
-    description: "Run memory consolidation to compress episodes into memories and memories into digests. Like sleep for the memory system. Use periodically or when requested.",
+    description: "Run memory consolidation to compress episodes into memories and memories into digests. Like sleep for the memory system. Requires ANTHROPIC_API_KEY. Use periodically or when explicitly requested.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -236,7 +267,7 @@ const TOOLS = [
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: false,
-      openWorldHint: false,
+      openWorldHint: true,  // Calls Anthropic API for consolidation
     },
   },
 ];
@@ -375,14 +406,72 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Remove from semantic index
         await search.removeFromIndex(id);
 
-        // Delete from database
-        db.deleteMemory(id);
+        // Soft-delete: mark as disabled instead of hard delete
+        db.updateMemory(id, { disabled: true });
 
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ success: true, deleted_id: id }),
+              text: JSON.stringify({ success: true, disabled_id: id, message: "Memory disabled (soft-deleted)" }),
+            },
+          ],
+        };
+      }
+
+      case "edit_memory": {
+        const { id, content, importance } = args as {
+          id: string;
+          content?: string;
+          importance?: number;
+        };
+
+        const memory = db.getMemory(id);
+        if (!memory) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ success: false, error: "Memory not found" }),
+              },
+            ],
+          };
+        }
+
+        // Build updates object
+        const updates: { content?: string; importance?: number } = {};
+        if (content !== undefined) updates.content = content;
+        if (importance !== undefined) updates.importance = importance;
+
+        if (Object.keys(updates).length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ success: false, error: "No updates provided" }),
+              },
+            ],
+          };
+        }
+
+        // Update the memory
+        const updated = db.updateMemory(id, updates);
+
+        // Re-index if content changed
+        if (content !== undefined && updated) {
+          await search.removeFromIndex(id);
+          await search.indexMemory(updated);
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                success: true,
+                memory_id: id,
+                updated_fields: Object.keys(updates),
+              }),
             },
           ],
         };
