@@ -497,73 +497,79 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           include_graph?: boolean;
         };
 
+        // First, check for entity profiles matching query terms
+        const queryWords = query.toLowerCase().split(/\s+/);
+        const allEntities = graph.listEntities(undefined, 100);
+        const matchedProfiles: string[] = [];
+        const matchedEntityIds: string[] = [];
+
+        for (const entity of allEntities) {
+          const entityWords = entity.name.toLowerCase().split(/\s+/);
+          if (entityWords.some(w => queryWords.includes(w))) {
+            const profile = db.getEntityProfile(entity.id);
+            if (profile) {
+              matchedProfiles.push(`[Profile: ${entity.name}] ${profile.content}`);
+              matchedEntityIds.push(entity.id);
+            }
+          }
+        }
+
+        // Run hybrid search
         const response = await search.search(query, {
           limit,
           includeGraph: include_graph,
         });
 
-        // Format digests (synthesized context - these provide broad understanding)
-        const digestsFormatted = response.digests.map((d) => ({
-          type: "digest" as const,
-          id: d.digest.id,
-          level: d.digest.level,  // 1=session, 2=topic, 3=entity
-          topic: d.digest.topic,
-          content: d.digest.content,
-          source_count: d.digest.source_count,
-          period: {
-            start: d.digest.period_start.toISOString(),
-            end: d.digest.period_end.toISOString(),
-          },
-          relevance_score: d.score.toFixed(4),
-          // Key evidence - specific memories supporting this synthesis
-          key_memories: d.key_memories.map((m) => ({
-            id: m.id,
-            content: m.content,
-            timestamp: m.timestamp.toISOString(),
-          })),
-        }));
+        // Build lean context array - profiles first, then digests, then memories
+        const context: string[] = [...matchedProfiles];
 
-        const formatted = response.results.map((r) => ({
-          type: "memory" as const,
-          id: r.memory.id,
-          content: r.memory.content,
-          source: r.memory.source,
-          timestamp: r.memory.timestamp.toISOString(),
-          relevance_score: r.score.toFixed(4),
-          retention: r.retention.toFixed(2),  // How well-retained (0-1)
-          matched_via: Object.entries(r.sources)
-            .filter(([, v]) => v !== undefined)
-            .map(([k]) => k)
-            .join(", "),
-        }));
+        // Add digests (L3 profiles already added, skip duplicates)
+        for (const d of response.digests) {
+          // Skip if this is an entity profile we already included
+          if (d.digest.entity_id && matchedEntityIds.includes(d.digest.entity_id)) {
+            continue;
+          }
+          const label = d.digest.level === 3 ? "Profile" :
+                        d.digest.level === 2 ? "Topic" : "Summary";
+          const topic = d.digest.topic ? `: ${d.digest.topic}` : "";
+          context.push(`[${label}${topic}] ${d.digest.content}`);
+        }
 
-        // Format connected memories (Hebbian associations)
-        const connectedFormatted = response.connected_memories.map((c) => ({
-          type: "connected" as const,
-          id: c.memory.id,
-          content: c.memory.content,
-          connected_to: c.connected_to,
-          connection_strength: c.strength.toFixed(2),
-        }));
+        // Format date: "Jan 5" for current year, "Jan 5 '24" for older
+        const currentYear = new Date().getFullYear();
+        const formatDate = (ts: Date) => {
+          const month = ts.toLocaleDateString("en-US", { month: "short" });
+          const day = ts.getDate();
+          const year = ts.getFullYear();
+          return year === currentYear ? `${month} ${day}` : `${month} ${day} '${String(year).slice(-2)}`;
+        };
+
+        // Add memories as simple dated entries
+        for (const r of response.results) {
+          context.push(`${formatDate(r.memory.timestamp)}: ${r.memory.content}`);
+        }
+
+        // Add connected memories
+        for (const c of response.connected_memories) {
+          context.push(`${formatDate(c.memory.timestamp)}: ${c.memory.content}`);
+        }
+
+        // Check if consolidation is needed
+        const unconsolidated = db.countUnconsolidatedMemories();
+
+        // Minimal response - just context array
+        const result: Record<string, unknown> = { context };
+
+        // Only add consolidation hint if needed (≥20 unconsolidated)
+        if (unconsolidated >= 20) {
+          result._consolidate = unconsolidated;
+        }
 
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({
-                recall_id: response.recall_id,  // For memory_feedback
-                query,
-                // Digests first - they provide synthesized context
-                digests: digestsFormatted,
-                digests_count: digestsFormatted.length,
-                // Then individual memories for specific evidence
-                results: formatted,
-                count: formatted.length,
-                connected_memories: connectedFormatted,
-                hint: formatted.length > 0 || digestsFormatted.length > 0
-                  ? "Call memory_feedback with useful_memory_ids after answering"
-                  : undefined,
-              }, null, 2),
+              text: JSON.stringify(result, null, 2),
             },
           ],
         };

@@ -1142,6 +1142,31 @@ export class EngramDatabase {
     return rows.map((row) => this.rowToDigest(row));
   }
 
+  /**
+   * Get L3 entity profile digest for a specific entity
+   */
+  getEntityProfile(entityId: string): Digest | null {
+    const row = this.stmt(`
+      SELECT * FROM digests
+      WHERE entity_id = ? AND level = 3
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(entityId) as Record<string, unknown> | undefined;
+    return row ? this.rowToDigest(row) : null;
+  }
+
+  /**
+   * Count unconsolidated memories (for consolidation hints)
+   */
+  countUnconsolidatedMemories(): number {
+    const row = this.stmt(`
+      SELECT COUNT(*) as count FROM memories m
+      LEFT JOIN digest_sources ds ON ds.memory_id = m.id
+      WHERE ds.digest_id IS NULL AND m.disabled = 0
+    `).get() as { count: number };
+    return row.count;
+  }
+
   getDigestSources(digestId: string): Memory[] {
     const rows = this.stmt(`
       SELECT m.* FROM memories m
