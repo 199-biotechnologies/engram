@@ -612,6 +612,64 @@ export class EngramWebServer {
       return;
     }
 
+    // GET /api/export - export database as CSV
+    if (pathname === "/api/export" && method === "GET") {
+      const format = url.searchParams.get("format") || "csv";
+
+      // Get all data
+      const memories = this.db.getAllMemories();
+      const entities = this.graph.listEntities(undefined, 10000);
+      const digests = this.db.getDigests(undefined, 10000);
+
+      if (format === "csv") {
+        // Build CSV content
+        const csvParts: string[] = [];
+
+        // Memories CSV
+        csvParts.push("=== MEMORIES ===");
+        csvParts.push("id,content,importance,emotional_weight,timestamp,source");
+        for (const m of memories) {
+          const content = m.content.replace(/"/g, '""').replace(/\n/g, ' ');
+          csvParts.push(`"${m.id}","${content}",${m.importance || 0.5},${m.emotional_weight || 0.5},"${m.timestamp.toISOString()}","${m.source || ''}"`);
+        }
+
+        csvParts.push("");
+        csvParts.push("=== ENTITIES ===");
+        csvParts.push("id,name,type");
+        for (const e of entities) {
+          const name = e.name.replace(/"/g, '""');
+          csvParts.push(`"${e.id}","${name}","${e.type}"`);
+        }
+
+        csvParts.push("");
+        csvParts.push("=== DIGESTS ===");
+        csvParts.push("id,level,topic,content,source_count,created_at");
+        for (const d of digests) {
+          const content = d.content.replace(/"/g, '""').replace(/\n/g, ' ');
+          const topic = (d.topic || '').replace(/"/g, '""');
+          csvParts.push(`"${d.id}",${d.level},"${topic}","${content}",${d.source_count},"${d.created_at.toISOString()}"`);
+        }
+
+        const csv = csvParts.join("\n");
+        const timestamp = new Date().toISOString().slice(0, 10);
+
+        res.writeHead(200, {
+          "Content-Type": "text/csv",
+          "Content-Disposition": `attachment; filename="engram-export-${timestamp}.csv"`,
+        });
+        res.end(csv);
+        return;
+      }
+
+      // JSON format (default fallback)
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Disposition": `attachment; filename="engram-export.json"`,
+      });
+      res.end(JSON.stringify({ memories, entities, digests }, null, 2));
+      return;
+    }
+
     // 404 for unknown API routes
     res.writeHead(404);
     res.end(JSON.stringify({ error: "Not found" }));

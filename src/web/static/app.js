@@ -1213,6 +1213,18 @@ clearApiKeyBtn?.addEventListener('click', async () => {
   }
 });
 
+// Export buttons
+const exportCsvBtn = document.getElementById('export-csv');
+const exportJsonBtn = document.getElementById('export-json');
+
+exportCsvBtn?.addEventListener('click', () => {
+  window.location.href = '/api/export?format=csv';
+});
+
+exportJsonBtn?.addEventListener('click', () => {
+  window.location.href = '/api/export?format=json';
+});
+
 // Chat
 chatToggle?.addEventListener('click', toggleChat);
 chatClose?.addEventListener('click', toggleChat);
