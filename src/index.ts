@@ -16,6 +16,9 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 
+import { getTransportMode, getHttpPort } from "./transport/index.js";
+import { startHttpServer } from "./transport/http.js";
+
 import { EngramDatabase } from "./storage/database.js";
 import { KnowledgeGraph } from "./graph/knowledge-graph.js";
 import { createRetriever } from "./retrieval/colbert.js";
@@ -112,17 +115,20 @@ process.on("SIGINT", () => {
 process.on("exit", cleanup);
 
 // Detect when parent process (Claude) dies by monitoring stdin
-process.stdin.on("end", () => {
-  console.error("[Engram] stdin closed, parent process likely died. Shutting down...");
-  cleanup();
-  process.exit(0);
-});
+// Only needed in stdio mode
+if (getTransportMode() === "stdio") {
+  process.stdin.on("end", () => {
+    console.error("[Engram] stdin closed, parent process likely died. Shutting down...");
+    cleanup();
+    process.exit(0);
+  });
 
-process.stdin.on("close", () => {
-  console.error("[Engram] stdin closed, shutting down...");
-  cleanup();
-  process.exit(0);
-});
+  process.stdin.on("close", () => {
+    console.error("[Engram] stdin closed, shutting down...");
+    cleanup();
+    process.exit(0);
+  });
+}
 
 // ============ Initialize Components ============
 
@@ -876,16 +882,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // ============ Main ============
 
 async function main() {
-  // Kill any zombie instances before starting
-  cleanupZombies();
-  writePidFile();
+  const transportMode = getTransportMode();
+
+  // Zombie cleanup only needed in stdio mode (local usage)
+  if (transportMode === "stdio") {
+    cleanupZombies();
+    writePidFile();
+  }
 
   await initialize();
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  console.error(`[Engram] MCP server running on stdio (PID ${process.pid})`);
+  if (transportMode === "http") {
+    // HTTP mode - for Railway/remote deployment
+    const port = getHttpPort();
+    await startHttpServer({ port, server });
+    console.error(`[Engram] MCP server running in HTTP mode (PID ${process.pid})`);
+  } else {
+    // Stdio mode (default) - for local Claude Desktop/Cursor
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error(`[Engram] MCP server running on stdio (PID ${process.pid})`);
+  }
 }
 
 main().catch((error) => {

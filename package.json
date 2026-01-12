@@ -1,6 +1,6 @@
 {
   "name": "@199-bio/engram",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Give Claude a perfect memory. Local-first MCP server with hybrid search.",
   "type": "module",
   "main": "dist/index.js",
@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "postinstall": "npm rebuild better-sqlite3 || true",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "test": "vitest",
