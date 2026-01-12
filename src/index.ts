@@ -544,21 +544,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return year === currentYear ? `${month} ${day}` : `${month} ${day} '${String(year).slice(-2)}`;
         };
 
-        // Add memories as simple dated entries
+        // Add memories as simple dated entries, track IDs for feedback
+        const memoryIds: string[] = [];
         for (const r of response.results) {
           context.push(`${formatDate(r.memory.timestamp)}: ${r.memory.content}`);
+          memoryIds.push(r.memory.id);
         }
 
         // Add connected memories
         for (const c of response.connected_memories) {
           context.push(`${formatDate(c.memory.timestamp)}: ${c.memory.content}`);
+          memoryIds.push(c.memory.id);
         }
 
         // Check if consolidation is needed
         const unconsolidated = db.countUnconsolidatedMemories();
 
-        // Minimal response - just context array
-        const result: Record<string, unknown> = { context };
+        // Lean response with feedback support
+        const result: Record<string, unknown> = {
+          context,
+          _ids: memoryIds,
+          _recall: response.recall_id,
+        };
 
         // Only add consolidation hint if needed (≥20 unconsolidated)
         if (unconsolidated >= 20) {
