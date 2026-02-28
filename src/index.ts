@@ -2,7 +2,7 @@
 /**
  * Engram - High-quality personal memory for AI assistants
  *
- * Local-first MCP server with ColBERT + BM25 hybrid search
+ * Local-first MCP server with Jina v5 + BM25 hybrid search
  * and a lightweight knowledge graph.
  */
 
@@ -21,7 +21,7 @@ import { startHttpServer } from "./transport/http.js";
 
 import { EngramDatabase } from "./storage/database.js";
 import { KnowledgeGraph } from "./graph/knowledge-graph.js";
-import { createRetriever } from "./retrieval/colbert.js";
+import { createRetriever, JinaRetriever, SimpleRetriever } from "./retrieval/jina.js";
 import { HybridSearch } from "./retrieval/hybrid.js";
 import { EngramWebServer, getRunningServerUrl } from "./web/server.js";
 import { Consolidator } from "./consolidation/consolidator.js";
@@ -91,6 +91,9 @@ function cleanup(): void {
     if (webServer) {
       webServer.stop();
     }
+    if (retriever && "stop" in retriever) {
+      (retriever as JinaRetriever).stop();
+    }
     if (db) {
       db.close();
     }
@@ -135,6 +138,7 @@ if (getTransportMode() === "stdio") {
 let db: EngramDatabase;
 let graph: KnowledgeGraph;
 let search: HybridSearch;
+let retriever: JinaRetriever | SimpleRetriever;
 let consolidator: Consolidator;
 let webServer: EngramWebServer | null = null;
 
@@ -144,7 +148,7 @@ async function initialize(): Promise<void> {
   db = new EngramDatabase(DB_FILE);
   graph = new KnowledgeGraph(db);
 
-  const retriever = await createRetriever(DB_PATH);
+  retriever = await createRetriever(DB_PATH);
   search = new HybridSearch(db, graph, retriever);
   consolidator = new Consolidator(db, graph, search);
 

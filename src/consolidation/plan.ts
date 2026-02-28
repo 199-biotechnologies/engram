@@ -14,16 +14,16 @@
 import { randomUUID } from "crypto";
 import { EngramDatabase, Memory, Episode, ConsolidationCheckpoint } from "../storage/database.js";
 
-// Token pricing (Opus 4.5 with extended thinking)
+// Token pricing (Opus 4.6 with extended thinking)
 const PRICING = {
   opus: {
     input: 15 / 1_000_000,      // $15 per 1M input tokens
     output: 75 / 1_000_000,     // $75 per 1M output tokens
     thinking: 15 / 1_000_000,   // $15 per 1M thinking tokens (same as input)
   },
-  haiku: {
-    input: 0.80 / 1_000_000,    // $0.80 per 1M input tokens
-    output: 4.00 / 1_000_000,   // $4.00 per 1M output tokens
+  sonnet: {
+    input: 3.00 / 1_000_000,    // $3.00 per 1M input tokens
+    output: 15.00 / 1_000_000,  // $15.00 per 1M output tokens
   },
 };
 
@@ -130,7 +130,7 @@ export class ConsolidationPlan {
     const phases: PhasePlan[] = [];
     const delayMs = this.db.getConfigNumber("delay_between_calls_ms", 2000);
 
-    // Episode phase (Haiku - cheap)
+    // Episode phase (Sonnet 4.6)
     if (unconsolidatedEp.length >= 4) {
       const batchCount = Math.min(episodeBatches, maxBatchesPerRun);
       const cost = batchCount * this.estimateEpisodeBatchCost();
@@ -139,7 +139,7 @@ export class ConsolidationPlan {
         itemCount: Math.min(unconsolidatedEp.length, batchCount * 20),
         batchCount,
         estimatedCost: cost,
-        estimatedTimeMs: batchCount * (2000 + delayMs), // ~2s per Haiku call + delay
+        estimatedTimeMs: batchCount * (2000 + delayMs), // ~2s per Sonnet call + delay
       });
     }
 
@@ -404,11 +404,11 @@ export class ConsolidationPlan {
   }
 
   /**
-   * Estimate cost for an episode batch (Haiku)
+   * Estimate cost for an episode batch (Sonnet 4.6)
    */
   private estimateEpisodeBatchCost(): number {
     const { input, output } = TOKEN_ESTIMATES.episodeBatch;
-    return (input * PRICING.haiku.input) + (output * PRICING.haiku.output);
+    return (input * PRICING.sonnet.input) + (output * PRICING.sonnet.output);
   }
 
   /**
@@ -424,7 +424,7 @@ export class ConsolidationPlan {
   /**
    * Calculate actual cost from token usage
    */
-  calculateCost(model: "opus" | "haiku", inputTokens: number, outputTokens: number, thinkingTokens?: number): number {
+  calculateCost(model: "opus" | "sonnet", inputTokens: number, outputTokens: number, thinkingTokens?: number): number {
     const pricing = PRICING[model];
     let cost = (inputTokens * pricing.input) + (outputTokens * pricing.output);
 

@@ -48,7 +48,7 @@ Install globally:
 npm install -g @199-bio/engram
 ```
 
-Add to **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to **MCP desktop client** (`~/Library/Application Support/AI/AI_desktop_config.json`):
 
 ```json
 {
@@ -64,10 +64,10 @@ Add to **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_
 }
 ```
 
-Or with **Claude Code**:
+Or with **AI coding assistant**:
 
 ```bash
-claude mcp add engram -- npx -y @199-bio/engram
+AI mcp add engram -- npx -y @199-bio/engram
 ```
 
 That's it. Your AI now remembers.
@@ -130,7 +130,7 @@ Your AI gets these capabilities:
 Engram uses three search methods simultaneously:
 
 1. **Keywords** — SQLite FTS5 finds exact matches for names, dates, and phrases
-2. **Meaning** — Neural embeddings find conceptually related content
+2. **Meaning** — Jina v5 embeddings find conceptually related content
 3. **Connections** — The knowledge graph expands to related entities
 
 Results are fused together, then adjusted for how recent and important each memory is. Fresh memories surface first. Important memories resist fading.
@@ -177,7 +177,7 @@ engram/
 │   ├── storage/database.ts   # SQLite with temporal fields
 │   ├── graph/knowledge-graph.ts
 │   ├── retrieval/
-│   │   ├── colbert.ts        # Semantic search
+│   │   ├── jina.ts           # Jina v5 semantic search
 │   │   └── hybrid.ts         # Fusion + decay + salience
 │   ├── consolidation/consolidator.ts
 │   └── web/server.ts         # Visual browser
@@ -208,13 +208,13 @@ npm run build
 npm install -g .
 ```
 
-For semantic search, install Python dependencies:
+For semantic search, install the Jina embeddings package:
 
 ```bash
-pip install ragatouille torch
+pip install jina-grep
 ```
 
-If unavailable, Engram falls back to keyword-only search automatically.
+This uses Jina v5 embeddings with MLX Metal acceleration (~9ms/query). If unavailable, Engram falls back to keyword-only search automatically.
 
 </details>
 

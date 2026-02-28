@@ -1,2 +1,2 @@
-export * from "./colbert.js";
+export * from "./jina.js";
 export * from "./hybrid.js";

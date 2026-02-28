@@ -1,6 +1,6 @@
 /**
  * Chat Handler for Engram Web Interface
- * Uses Claude Opus 4.5 with tools for entity/memory management
+ * Uses Claude Opus 4.6 with tools for entity/memory management
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -414,7 +414,7 @@ export class ChatHandler {
 
       while (continueLoop) {
         const stream = this.client.messages.stream({
-          model: "claude-opus-4-5-20251101",
+          model: "claude-opus-4-6-20250514",
           max_tokens: 16000,
           system: SYSTEM_PROMPT,
           tools: TOOLS,
@@ -528,7 +528,7 @@ export class ChatHandler {
       }
 
       let response = await this.client.messages.create({
-        model: "claude-opus-4-5-20251101",
+        model: "claude-opus-4-6-20250514",
         max_tokens: 16000,
         system: SYSTEM_PROMPT,
         tools: TOOLS,
@@ -569,7 +569,7 @@ export class ChatHandler {
 
         // Continue the conversation
         response = await this.client.messages.create({
-          model: "claude-opus-4-5-20251101",
+          model: "claude-opus-4-6-20250514",
           max_tokens: 16000,
           system: SYSTEM_PROMPT,
           tools: TOOLS,

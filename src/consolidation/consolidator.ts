@@ -1,7 +1,7 @@
 /**
  * Memory Consolidator
  *
- * Uses Opus 4.5 with extended thinking to consolidate memories into digests
+ * Uses Opus 4.6 with extended thinking to consolidate memories into digests
  * and detect contradictions. Inspired by how the brain consolidates
  * short-term memories into long-term storage during sleep.
  *
@@ -241,7 +241,7 @@ export class Consolidator {
   }
 
   /**
-   * Consolidate a batch of memories using Opus 4.5 with extended thinking
+   * Consolidate a batch of memories using Opus 4.6 with extended thinking
    */
   private async consolidateBatch(
     memories: Memory[]
@@ -273,7 +273,7 @@ Create a detailed digest that preserves all important information. Respond with 
 
     try {
       const response = await client.messages.create({
-        model: "claude-opus-4-5-20251101",
+        model: "claude-opus-4-6-20250514",
         max_tokens: 16000,
         temperature: 1, // Required for extended thinking
         thinking: {
@@ -363,7 +363,7 @@ Create a rich, detailed profile. Do not summarize away important nuances. Respon
 
     try {
       const response = await client.messages.create({
-        model: "claude-opus-4-5-20251101",
+        model: "claude-opus-4-6-20250514",
         max_tokens: 16000,
         temperature: 1, // Required for extended thinking
         thinking: {
@@ -560,7 +560,7 @@ Create a rich, detailed profile. Do not summarize away important nuances. Respon
   }
 
   /**
-   * Extract memories from conversation episodes using Haiku (fast, cheap)
+   * Extract memories from conversation episodes using Sonnet 4.6 (fast, affordable)
    */
   private async extractMemoriesFromEpisodes(
     episodes: Episode[]
@@ -583,9 +583,9 @@ Remember: Only extract information worth remembering long-term. Skip transient t
 Respond with JSON only.`;
 
     try {
-      // Use Haiku for speed/cost (no extended thinking needed)
+      // Use Sonnet 4.6 for speed/cost (no extended thinking needed)
       const response = await client.messages.create({
-        model: "claude-haiku-4-5-20251201",
+        model: "claude-sonnet-4-6-20250514",
         max_tokens: 4000,
         messages: [
           {
@@ -781,10 +781,10 @@ Respond with JSON only.`;
           episodesProcessed += sessionEpisodes.length;
           batchIndex++;
 
-          // Estimate tokens (Haiku)
+          // Estimate tokens (Sonnet 4.6)
           const batchTokens = 3000; // Conservative estimate
           totalTokens += batchTokens;
-          totalCost += plan.calculateCost("haiku", 2000, 1000);
+          totalCost += plan.calculateCost("sonnet", 2000, 1000);
 
           plan.updateProgress({
             batchesCompleted: batchIndex,

@@ -1,12 +1,12 @@
 /**
  * Hybrid Search with Reciprocal Rank Fusion (RRF)
- * Combines BM25 (keyword) and ColBERT (semantic) search
+ * Combines BM25 (keyword) and Jina v5 (semantic) search
  * Enhanced with temporal decay and salience scoring
  */
 
 import { EngramDatabase, Memory, Digest } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
-import { ColBERTRetriever, SimpleRetriever, SearchResult, Document } from "./colbert.js";
+import { JinaRetriever, SimpleRetriever, SearchResult, Document } from "./jina.js";
 
 export interface HybridSearchResult {
   memory: Memory;
@@ -44,7 +44,7 @@ export interface HybridSearchResponse {
  * Higher stability = slower forgetting
  * Recent access = higher retention
  */
-function calculateRetention(memory: Memory, now: Date): number {
+export function calculateRetention(memory: Memory, now: Date): number {
   // Use last_accessed if available, otherwise timestamp
   const lastActive = memory.last_accessed || memory.timestamp;
   const daysSinceAccess = (now.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24);
@@ -65,7 +65,7 @@ function calculateRetention(memory: Memory, now: Date): number {
  * Calculate salience score - how important/memorable is this?
  * Combines emotional weight, importance, and access patterns
  */
-function calculateSalience(memory: Memory): number {
+export function calculateSalience(memory: Memory): number {
   const importance = memory.importance || 0.5;
   const emotionalWeight = memory.emotional_weight || 0.5;
   const accessBonus = Math.min(1, Math.log(1 + (memory.access_count || 0)) / 5);
@@ -77,7 +77,7 @@ function calculateSalience(memory: Memory): number {
 /**
  * Apply temporal and salience adjustments to search results
  */
-function adjustScore(memory: Memory, baseScore: number, now: Date): { adjusted: number; retention: number } {
+export function adjustScore(memory: Memory, baseScore: number, now: Date): { adjusted: number; retention: number } {
   const retention = calculateRetention(memory, now);
   const salience = calculateSalience(memory);
 
@@ -97,7 +97,7 @@ export class HybridSearch {
   constructor(
     private db: EngramDatabase,
     private graph: KnowledgeGraph,
-    private retriever: ColBERTRetriever | SimpleRetriever
+    private retriever: JinaRetriever | SimpleRetriever
   ) {
     // Generate a session ID for this search instance
     this.sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -113,8 +113,8 @@ export class HybridSearch {
   /**
    * Search using all available methods and fuse results
    *
-   * Strategy: BM25 gets candidates fast, ColBERT reranks for quality
-   * This is both FASTER (fewer ColBERT computations) and BETTER (combines keyword + semantic)
+   * Strategy: BM25 gets candidates fast, Jina reranks for quality
+   * This is both FASTER (fewer Jina computations) and BETTER (combines keyword + semantic)
    */
   async search(
     query: string,
@@ -128,7 +128,7 @@ export class HybridSearch {
       semanticWeight?: number;
       graphWeight?: number;
       connectionWeight?: number;     // Weight for connected memories in RRF
-      useReranking?: boolean;        // Use ColBERT to rerank BM25 results
+      useReranking?: boolean;        // Use Jina to rerank BM25 results
     } = {}
   ): Promise<HybridSearchResponse> {
     const {
@@ -163,7 +163,7 @@ export class HybridSearch {
     // For semantic: either rerank BM25 results (faster+better) or search full index
     let semanticResults: Array<{ id: string; score: number }>;
     if (useReranking && bm25Results.length > 0) {
-      // Rerank BM25 candidates with ColBERT - faster AND better quality
+      // Rerank BM25 candidates with Jina - faster AND better quality
       const docs = bm25Results.map(r => ({ id: r.id, content: this.db.getMemory(r.id)?.content || '' }));
       const reranked = await this.retriever.rerank(query, docs, candidateLimit);
       semanticResults = reranked.map(r => ({ id: r.id, score: r.score }));
@@ -447,7 +447,7 @@ export class HybridSearch {
   }
 
   /**
-   * Semantic search via ColBERT
+   * Semantic search via Jina v5
    */
   private async searchSemantic(query: string, limit: number): Promise<Array<{ id: string; score: number }>> {
     try {

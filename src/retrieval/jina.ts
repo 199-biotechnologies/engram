@@ -1,5 +1,5 @@
 /**
- * ColBERT retriever - TypeScript wrapper for Python bridge
+ * Jina v5 retriever - TypeScript wrapper for Python bridge
  */
 
 import { spawn, ChildProcess } from "child_process";
@@ -11,7 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Python bridge is in src/, not dist/ - go up from dist/retrieval to project root, then into src/
-const BRIDGE_PATH = path.join(__dirname, "..", "..", "src", "retrieval", "colbert-bridge.py");
+const BRIDGE_PATH = path.join(__dirname, "..", "..", "src", "retrieval", "jina-bridge.py");
 
 export interface Document {
   id: string;
@@ -32,7 +32,7 @@ interface BridgeResponse {
   error?: string;
 }
 
-export class ColBERTRetriever {
+export class JinaRetriever {
   private process: ChildProcess | null = null;
   private readline: Interface | null = null;
   private pendingRequests: Map<number, {
@@ -76,14 +76,20 @@ export class ColBERTRetriever {
 
     this.process.stderr?.on("data", (data) => {
       // Log Python errors for debugging
-      console.error(`[ColBERT] ${data.toString()}`);
+      console.error(`[Jina] ${data.toString()}`);
     });
 
     this.process.on("exit", (code) => {
-      console.error(`[ColBERT] Process exited with code ${code}`);
+      console.error(`[Jina] Process exited with code ${code}`);
       this.ready = false;
       this.process = null;
       this.readline = null;
+
+      // Reject all pending requests
+      for (const [id, { reject }] of this.pendingRequests) {
+        reject(new Error("Bridge process exited"));
+      }
+      this.pendingRequests.clear();
     });
 
     // Wait for ready signal
@@ -109,7 +115,7 @@ export class ColBERTRetriever {
         resolve(response);
       }
     } catch (error) {
-      console.error(`[ColBERT] Failed to parse: ${line}`);
+      console.error(`[Jina] Failed to parse: ${line}`);
     }
   }
 
@@ -120,7 +126,16 @@ export class ColBERTRetriever {
 
     return new Promise((resolve, reject) => {
       const id = this.requestId++;
-      this.pendingRequests.set(id, { resolve, reject });
+
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Bridge request timed out after 30s: ${command.action}`));
+      }, 30_000);
+
+      this.pendingRequests.set(id, {
+        resolve: (value) => { clearTimeout(timeout); resolve(value); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
 
       const json = JSON.stringify(command) + "\n";
       this.process!.stdin!.write(json);
@@ -171,7 +186,7 @@ export class ColBERTRetriever {
   }
 
   /**
-   * Rerank documents using ColBERT
+   * Rerank documents using Jina v5
    */
   async rerank(query: string, documents: Document[], k: number = 10): Promise<SearchResult[]> {
     const response = await this.send({
@@ -230,7 +245,7 @@ export class ColBERTRetriever {
 }
 
 /**
- * Fallback retriever when ColBERT is not available
+ * Fallback retriever when Jina is not available
  * Uses simple TF-IDF-like scoring
  */
 export class SimpleRetriever {
@@ -299,17 +314,17 @@ export class SimpleRetriever {
 /**
  * Create the best available retriever
  */
-export async function createRetriever(indexPath: string): Promise<ColBERTRetriever | SimpleRetriever> {
-  const colbert = new ColBERTRetriever(indexPath);
+export async function createRetriever(indexPath: string): Promise<JinaRetriever | SimpleRetriever> {
+  const jina = new JinaRetriever(indexPath);
 
   try {
-    await colbert.start();
-    if (await colbert.ping()) {
-      console.error("[Engram] Using ColBERT retriever");
-      return colbert;
+    await jina.start();
+    if (await jina.ping()) {
+      console.error("[Engram] Using Jina v5 retriever");
+      return jina;
     }
   } catch (error) {
-    console.error("[Engram] ColBERT not available, using simple retriever:", error);
+    console.error("[Engram] Jina not available, using simple retriever:", error);
   }
 
   console.error("[Engram] Using simple fallback retriever");

@@ -223,7 +223,16 @@ export class EngramWebServer {
     url: URL
   ): Promise<void> {
     const method = req.method || "GET";
-    const body = method !== "GET" ? await this.parseBody(req) : null;
+    let body: unknown = null;
+    if (method !== "GET") {
+      try {
+        body = await this.parseBody(req);
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : "Invalid request body" }));
+        return;
+      }
+    }
 
     res.setHeader("Content-Type", "application/json");
 
@@ -237,8 +246,10 @@ export class EngramWebServer {
     // GET /api/memories
     if (pathname === "/api/memories" && method === "GET") {
       const query = url.searchParams.get("q");
-      const limit = parseInt(url.searchParams.get("limit") || "50");
-      const offset = parseInt(url.searchParams.get("offset") || "0");
+      const rawLimit = parseInt(url.searchParams.get("limit") || "50");
+      const rawOffset = parseInt(url.searchParams.get("offset") || "0");
+      const limit = Math.max(1, Math.min(500, isNaN(rawLimit) ? 50 : rawLimit));
+      const offset = Math.max(0, isNaN(rawOffset) ? 0 : rawOffset);
 
       if (query) {
         const response = await this.search.search(query, { limit });
@@ -259,6 +270,16 @@ export class EngramWebServer {
     // POST /api/memories
     if (pathname === "/api/memories" && method === "POST") {
       const { content, source, importance } = body as any;
+      if (!content || typeof content !== "string" || content.trim().length === 0) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "content is required and must be a non-empty string" }));
+        return;
+      }
+      if (importance !== undefined && (typeof importance !== "number" || importance < 0 || importance > 1)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "importance must be a number between 0 and 1" }));
+        return;
+      }
       const memory = this.db.createMemory(content, source || "web", importance || 0.5);
       await this.search.indexMemory(memory);
       res.writeHead(201);
@@ -271,6 +292,16 @@ export class EngramWebServer {
     if (memoryMatch && method === "PUT") {
       const id = memoryMatch[1];
       const { content, importance } = body as any;
+      if (content !== undefined && (typeof content !== "string" || content.trim().length === 0)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "content must be a non-empty string" }));
+        return;
+      }
+      if (importance !== undefined && (typeof importance !== "number" || importance < 0 || importance > 1)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "importance must be a number between 0 and 1" }));
+        return;
+      }
       const updated = this.db.updateMemory(id, { content, importance });
       if (updated) {
         res.end(JSON.stringify({ memory: updated }));
@@ -444,6 +475,11 @@ export class EngramWebServer {
         res.end(JSON.stringify({ error: "Message is required" }));
         return;
       }
+      if (typeof message !== "string" || message.length > 100_000) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "message must be a string under 100,000 characters" }));
+        return;
+      }
 
       const response = await this.chat.chat(message);
       res.end(JSON.stringify({ response }));
@@ -463,6 +499,11 @@ export class EngramWebServer {
       if (!message) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Message is required" }));
+        return;
+      }
+      if (typeof message !== "string" || message.length > 100_000) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "message must be a string under 100,000 characters" }));
         return;
       }
 
@@ -709,10 +750,22 @@ export class EngramWebServer {
 
   private parseBody(req: http.IncomingMessage): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      let data = "";
-      req.on("data", (chunk) => (data += chunk));
+      const chunks: Buffer[] = [];
+      let size = 0;
+      const MAX_BODY = 1_048_576; // 1MB
+
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_BODY) {
+          req.destroy();
+          reject(new Error("Payload too large (max 1MB)"));
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on("end", () => {
         try {
+          const data = Buffer.concat(chunks).toString();
           resolve(data ? JSON.parse(data) : {});
         } catch (e) {
           reject(e);

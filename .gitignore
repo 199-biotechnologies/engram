@@ -32,9 +32,17 @@ __pycache__/
 venv/
 .python-version
 
-# ColBERT indexes
+# Jina indexes
+jina_indexes/
+engram_vectors.npz
+engram_meta.json
+
+# Legacy ColBERT indexes
 .ragatouille/
 colbert_indexes/
+
+# Claude Code
+.claude/
 
 # Environment
 .env
@@ -61,3 +69,4 @@ coverage/
 tmp/
 temp/
 *.tmp
+postcss.config.cjs
