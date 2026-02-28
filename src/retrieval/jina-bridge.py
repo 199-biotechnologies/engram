@@ -57,7 +57,7 @@ class JinaBridge:
                 raise RuntimeError(
                     "jina_grep not installed. Run: pip install jina-grep"
                 )
-            self.embedder = LocalEmbedder(MODEL_NAME)
+            self.embedder = LocalEmbedder()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -103,7 +103,7 @@ class JinaBridge:
     def _embed(self, texts: list[str]) -> np.ndarray:
         """Embed a list of texts and return L2-normalized vectors (n, EMBEDDING_DIM)."""
         self._ensure_embedder()
-        raw = self.embedder.embed(texts, task="retrieval")
+        raw = self.embedder.embed(texts, model=MODEL_NAME, task="retrieval")
         vecs = np.array(raw, dtype=np.float32)
 
         # Matryoshka truncation to target dimension

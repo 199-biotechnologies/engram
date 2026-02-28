@@ -280,7 +280,7 @@ export class EngramWebServer {
         res.end(JSON.stringify({ error: "importance must be a number between 0 and 1" }));
         return;
       }
-      const memory = this.db.createMemory(content, source || "web", importance || 0.5);
+      const memory = this.db.createMemory(content, source || "web", importance ?? 0.5);
       await this.search.indexMemory(memory);
       res.writeHead(201);
       res.end(JSON.stringify({ memory }));

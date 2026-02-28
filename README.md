@@ -1,12 +1,16 @@
 # Engram
 
+<p align="center">
+  <img src="logo.png" alt="Engram" width="480" />
+</p>
+
 **Give your AI a perfect memory.**
 
-Every conversation you have with your AI disappears the moment it ends. Names you've mentioned, preferences you've shared, the context of your life—all gone. You find yourself repeating the same information, re-explaining who people are, reminding it of things you've already said.
+Every conversation you have with your AI disappears the moment it ends. Names you've mentioned, preferences you've shared, the context of your life — gone. You repeat yourself. You re-explain who people are. You remind it of things you've already said.
 
-Engram changes that.
+Engram fixes that.
 
-It gives your AI the ability to remember. Not just store text, but truly remember—the way you do. Important things stick. Trivial things fade. And everything connects to everything else.
+It lets your AI remember. Not just store text — actually remember, the way you do. Important things stick. Trivial things fade. And everything connects.
 
 > *An engram is a unit of cognitive information imprinted in a physical substance—the biological basis of memory.*
 
@@ -14,7 +18,7 @@ It gives your AI the ability to remember. Not just store text, but truly remembe
 
 ## How It Works
 
-Tell your AI something once:
+Tell your AI something once. Just once:
 
 > "My colleague Sarah is allergic to shellfish and prefers window seats. She's leading the Q1 product launch."
 
@@ -22,7 +26,7 @@ Weeks later, ask:
 
 > "I'm booking a team lunch and flights for the offsite—what should I know?"
 
-Engram connects the dots. It remembers Sarah, her allergy, her seating preference, and her current workload. Your AI can now actually help—suggesting restaurants without shellfish, booking her a window seat, and noting she might be busy with the launch.
+Engram connects the dots. It remembers Sarah — the allergy, the seating preference, the workload. Your AI can now actually help. It'll suggest restaurants without shellfish and book her a window seat. It'll flag that she's probably swamped with the launch.
 
 This isn't keyword matching. It's understanding.
 
@@ -32,11 +36,11 @@ This isn't keyword matching. It's understanding.
 
 Engram models memory the way your brain does.
 
-**Things fade.** A memory from six months ago that you've never thought about becomes harder to find. But something important—a name, a birthday, a preference—stays accessible even as time passes.
+**Things fade.** A memory from six months ago that you've never revisited becomes harder to find. But something important — a name, a birthday, a preference — stays accessible even as time passes.
 
-**Recall strengthens.** Every time a memory surfaces, it becomes more permanent. The things you think about often become the things you'll never forget.
+**Recall strengthens.** Every time a memory surfaces, it becomes more permanent. The things you think about often are the things you won't forget.
 
-**Everything connects.** People link to places. Places link to events. When you ask about one thing, related things come along for the ride. Ask about Sarah, and her company, her projects, and her preferences all surface together.
+**Everything connects.** People link to places, places to events. Ask about Sarah, and her company, her projects, her preferences all surface together.
 
 ---
 
@@ -89,15 +93,15 @@ Just talk naturally. Your AI handles the rest.
 - "When is my anniversary?"
 
 **Build a knowledge graph** of your world:
-- People, places, organizations, and how they connect
+- People, places, organizations — how they connect
 - Observations about each entity
-- Relationships that span your entire life
+- Relationships that span your whole life
 
 ---
 
 ## Privacy
 
-Your memories stay on your machine. Everything is stored locally in `~/.engram/`. The only external call is optional—if you provide an API key, Engram can periodically compress old memories into summaries. But the core functionality works entirely offline.
+Your memories stay on your machine. Everything lives in `~/.engram/`. The only external call is optional — if you provide an API key, Engram can compress old memories into summaries. But core functionality works offline.
 
 ---
 
@@ -110,14 +114,14 @@ Your AI gets these capabilities:
 
 | Tool | Purpose |
 |------|---------|
-| `remember` | Store new information with importance, emotions, and timing |
+| `remember` | Store new information with importance and emotional weight |
 | `recall` | Find relevant memories ranked by relevance and recency |
 | `forget` | Remove a specific memory |
-| `create_entity` | Add a person, place, or concept to the knowledge graph |
+| `create_entity` | Add a person, place, or concept to the graph |
 | `observe` | Record a fact about an entity |
 | `relate` | Connect two entities (e.g., "works at", "married to") |
 | `query_entity` | Get everything known about someone or something |
-| `list_entities` | See all tracked people, places, and things |
+| `list_entities` | See all tracked people and places |
 | `stats` | View memory statistics |
 | `consolidate` | Compress old memories and detect contradictions |
 | `engram_web` | Launch a visual memory browser |
@@ -127,13 +131,13 @@ Your AI gets these capabilities:
 <details>
 <summary><strong>How Search Works</strong></summary>
 
-Engram uses three search methods simultaneously:
+Engram runs three search methods at once:
 
-1. **Keywords** — SQLite FTS5 finds exact matches for names, dates, and phrases
+1. **Keywords** — SQLite FTS5 finds exact matches for names and phrases
 2. **Meaning** — Jina v5 embeddings find conceptually related content
 3. **Connections** — The knowledge graph expands to related entities
 
-Results are fused together, then adjusted for how recent and important each memory is. Fresh memories surface first. Important memories resist fading.
+Results are merged, then ranked by recency and importance. Fresh memories surface first. Important memories resist fading.
 
 </details>
 
@@ -147,23 +151,23 @@ Retention = e^(-time / stability)
 ```
 
 - **Time** is days since the memory was last accessed
-- **Stability** is memory strength, which increases each time you recall something
+- **Stability** is memory strength, which grows each time you recall something
 
-High-importance and emotionally significant memories decay slower. Frequently accessed memories become essentially permanent.
+High-importance and emotionally weighted memories decay slower. Frequently accessed memories become permanent.
 
 </details>
 
 <details>
 <summary><strong>How Consolidation Works</strong></summary>
 
-With an API key, Engram can compress old memories—like how sleep consolidates your experiences into long-term storage.
+With an API key, Engram compresses old memories — like sleep turning experiences into long-term storage.
 
-1. Groups related low-importance memories together
+1. Groups related low-importance memories
 2. Creates AI-generated summaries (digests)
-3. Detects contradictory information
+3. Flags contradictory information
 4. Archives the originals
 
-This keeps storage efficient while preserving everything important.
+Storage stays lean, but nothing important gets lost.
 
 </details>
 
@@ -214,7 +218,7 @@ For semantic search, install the Jina embeddings package:
 pip install jina-grep
 ```
 
-This uses Jina v5 embeddings with MLX Metal acceleration (~9ms/query). If unavailable, Engram falls back to keyword-only search automatically.
+This uses Jina v5 embeddings with MLX Metal acceleration (~9ms/query). If unavailable, Engram falls back to keyword-only search.
 
 </details>
 
