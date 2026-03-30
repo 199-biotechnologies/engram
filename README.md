@@ -1,58 +1,85 @@
-# Engram
-
 <p align="center">
-  <img src="logo.png" alt="Engram" width="480" />
+  <img src="logo.png" alt="Engram - MCP Server for AI Memory" width="480" />
 </p>
 
-**Give your AI a perfect memory.**
+<h3 align="center">Give your AI a memory that actually works.</h3>
 
-Every conversation you have with your AI disappears the moment it ends. Names you've mentioned, preferences you've shared, the context of your life — gone. You repeat yourself. You re-explain who people are. You remind it of things you've already said.
+<p align="center">
+  <a href="https://github.com/199-biotechnologies/engram/stargazers">
+    <img src="https://img.shields.io/github/stars/199-biotechnologies/engram?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow" alt="GitHub Stars" />
+  </a>
+  &nbsp;
+  <a href="https://x.com/longevityboris">
+    <img src="https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow on X" />
+  </a>
+</p>
 
-Engram fixes that.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@199-bio/engram">
+    <img src="https://img.shields.io/npm/v/@199-bio/engram?style=for-the-badge&logo=npm&color=CB3837" alt="npm version" />
+  </a>
+  <a href="https://github.com/199-biotechnologies/engram/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/199-biotechnologies/engram?style=for-the-badge" alt="MIT License" />
+  </a>
+  <a href="https://www.typescriptlang.org/">
+    <img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+  </a>
+  <a href="https://modelcontextprotocol.io/">
+    <img src="https://img.shields.io/badge/MCP-Compatible-8A2BE2?style=for-the-badge" alt="MCP Compatible" />
+  </a>
+</p>
 
-It lets your AI remember. Not just store text — actually remember, the way you do. Important things stick. Trivial things fade. And everything connects.
+<p align="center">
+Every conversation your AI has disappears the moment it ends. Names, preferences, context -- gone. Engram is an MCP server that gives your AI persistent personal memory with hybrid search (BM25 + semantic embeddings + knowledge graph), temporal decay modeled on the Ebbinghaus forgetting curve, and memory consolidation. Local-first. Works with Claude, Claude Code, and any MCP client.
+</p>
 
-> *An engram is a unit of cognitive information imprinted in a physical substance—the biological basis of memory.*
+<p align="center">
+  <a href="#install">Install</a> &bull;
+  <a href="#quick-start">Quick Start</a> &bull;
+  <a href="#how-it-works">How It Works</a> &bull;
+  <a href="#features">Features</a> &bull;
+  <a href="#configuration">Configuration</a> &bull;
+  <a href="#contributing">Contributing</a> &bull;
+  <a href="#license">License</a>
+</p>
 
 ---
 
-## How It Works
+## Why This Exists
 
-Tell your AI something once. Just once:
+You tell your AI something important. A name, an allergy, a deadline. Next conversation -- it's forgotten. You repeat yourself. You re-explain context. You carry the cognitive load that your AI should carry for you.
+
+Engram gives your AI a real memory system. Tell it once:
 
 > "My colleague Sarah is allergic to shellfish and prefers window seats. She's leading the Q1 product launch."
 
 Weeks later, ask:
 
-> "I'm booking a team lunch and flights for the offsite—what should I know?"
+> "I'm booking a team lunch and flights for the offsite -- what should I know?"
 
-Engram connects the dots. It remembers Sarah — the allergy, the seating preference, the workload. Your AI can now actually help. It'll suggest restaurants without shellfish and book her a window seat. It'll flag that she's probably swamped with the launch.
+Engram connects the dots. It remembers Sarah, the allergy, the seating preference, the workload. Your AI suggests restaurants without shellfish, books her a window seat, and flags that she's probably swamped with the launch.
 
-This isn't keyword matching. It's understanding.
+This is not keyword matching. It is understanding.
 
----
-
-## Memory That Feels Real
-
-Engram models memory the way your brain does.
-
-**Things fade.** A memory from six months ago that you've never revisited becomes harder to find. But something important — a name, a birthday, a preference — stays accessible even as time passes.
-
-**Recall strengthens.** Every time a memory surfaces, it becomes more permanent. The things you think about often are the things you won't forget.
-
-**Everything connects.** People link to places, places to events. Ask about Sarah, and her company, her projects, her preferences all surface together.
+> *An engram is a unit of cognitive information imprinted in a physical substance -- the biological basis of memory.*
 
 ---
 
-## Quick Start
-
-Install globally:
+## Install
 
 ```bash
 npm install -g @199-bio/engram
 ```
 
-Add to **MCP desktop client** (`~/Library/Application Support/AI/AI_desktop_config.json`):
+Requires Node.js 18+.
+
+---
+
+## Quick Start
+
+### With Claude Desktop (or any MCP desktop client)
+
+Add to your MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -68,99 +95,92 @@ Add to **MCP desktop client** (`~/Library/Application Support/AI/AI_desktop_conf
 }
 ```
 
-Or with **AI coding assistant**:
+### With Claude Code
 
 ```bash
-AI mcp add engram -- npx -y @199-bio/engram
+claude mcp add engram -- npx -y @199-bio/engram
 ```
 
 That's it. Your AI now remembers.
 
 ---
 
-## What You Can Do
+## How It Works
 
-Just talk naturally. Your AI handles the rest.
+Engram runs three search methods in parallel and fuses the results:
 
-**Store memories** by mentioning things:
-- "Remember that my anniversary is March 15th"
-- "Sarah prefers async communication"
-- "I'm allergic to penicillin"
+```
+                        ┌─────────────────┐
+                        │   Your Query    │
+                        └────────┬────────┘
+                                 │
+                 ┌───────────────┼───────────────┐
+                 │               │               │
+                 ▼               ▼               ▼
+          ┌──────────┐   ┌──────────┐   ┌──────────────┐
+          │   BM25   │   │ Semantic │   │  Knowledge   │
+          │ Keyword  │   │Embedding │   │    Graph     │
+          │  Search  │   │  Search  │   │   Lookup     │
+          └────┬─────┘   └────┬─────┘   └──────┬───────┘
+               │              │                 │
+               └──────────────┼─────────────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │  Reciprocal Rank  │
+                    │     Fusion        │
+                    └─────────┬─────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │  Temporal Decay   │
+                    │  + Salience Score │
+                    └─────────┬─────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │  Ranked Results   │
+                    └───────────────────┘
+```
 
-**Recall memories** by asking:
-- "What do you know about Sarah?"
-- "What are my allergies?"
-- "When is my anniversary?"
+**BM25** finds exact keyword matches for names and phrases via SQLite FTS5.
 
-**Build a knowledge graph** of your world:
-- People, places, organizations — how they connect
-- Observations about each entity
-- Relationships that span your whole life
+**Semantic search** finds conceptually related content using Jina v5 embeddings with MLX Metal acceleration (~9ms/query on Apple Silicon).
+
+**Knowledge graph** expands results through entity relationships -- ask about Sarah and her company, projects, and preferences all surface together.
+
+Results are merged with Reciprocal Rank Fusion, then scored by temporal decay (Ebbinghaus forgetting curve) and salience. Fresh memories surface first. Important memories resist fading.
 
 ---
 
-## Privacy
+## Features
 
-Your memories stay on your machine. Everything lives in `~/.engram/`. The only external call is optional — if you provide an API key, Engram can compress old memories into summaries. But core functionality works offline.
+### Memory That Feels Real
 
----
+**Things fade.** A memory from six months ago that you never revisited becomes harder to find. But important things -- a name, a birthday, a preference -- stay accessible even as time passes.
 
-## The Details
+**Recall strengthens.** Every time a memory surfaces, it becomes more permanent. The things you think about often are the things your AI won't forget.
 
-<details>
-<summary><strong>Available Tools</strong></summary>
+**Everything connects.** People link to places, places to events, events to details. The knowledge graph keeps your world coherent.
 
-Your AI gets these capabilities:
+### MCP Tools
 
-| Tool | Purpose |
-|------|---------|
+Your AI gets these capabilities through the Model Context Protocol:
+
+| Tool | What It Does |
+|------|-------------|
 | `remember` | Store new information with importance and emotional weight |
 | `recall` | Find relevant memories ranked by relevance and recency |
 | `forget` | Remove a specific memory |
-| `create_entity` | Add a person, place, or concept to the graph |
+| `create_entity` | Add a person, place, or concept to the knowledge graph |
 | `observe` | Record a fact about an entity |
 | `relate` | Connect two entities (e.g., "works at", "married to") |
 | `query_entity` | Get everything known about someone or something |
-| `list_entities` | See all tracked people and places |
+| `list_entities` | See all tracked entities |
 | `stats` | View memory statistics |
 | `consolidate` | Compress old memories and detect contradictions |
 | `engram_web` | Launch a visual memory browser |
 
-</details>
+### Memory Consolidation
 
-<details>
-<summary><strong>How Search Works</strong></summary>
-
-Engram runs three search methods at once:
-
-1. **Keywords** — SQLite FTS5 finds exact matches for names and phrases
-2. **Meaning** — Jina v5 embeddings find conceptually related content
-3. **Connections** — The knowledge graph expands to related entities
-
-Results are merged, then ranked by recency and importance. Fresh memories surface first. Important memories resist fading.
-
-</details>
-
-<details>
-<summary><strong>How Forgetting Works</strong></summary>
-
-Memories follow an exponential decay curve:
-
-```
-Retention = e^(-time / stability)
-```
-
-- **Time** is days since the memory was last accessed
-- **Stability** is memory strength, which grows each time you recall something
-
-High-importance and emotionally weighted memories decay slower. Frequently accessed memories become permanent.
-
-</details>
-
-<details>
-<summary><strong>How Consolidation Works</strong></summary>
-
-With an API key, Engram compresses old memories — like sleep turning experiences into long-term storage.
+With an API key, Engram compresses old memories -- like sleep turning experiences into long-term storage:
 
 1. Groups related low-importance memories
 2. Creates AI-generated summaries (digests)
@@ -169,61 +189,11 @@ With an API key, Engram compresses old memories — like sleep turning experienc
 
 Storage stays lean, but nothing important gets lost.
 
-</details>
+### Privacy
 
-<details>
-<summary><strong>Architecture</strong></summary>
+Your memories stay on your machine. Everything lives in `~/.engram/`. The only external call is optional -- if you provide an API key, Engram can compress old memories into summaries. Core functionality works offline.
 
-```
-engram/
-├── src/
-│   ├── index.ts              # MCP server
-│   ├── storage/database.ts   # SQLite with temporal fields
-│   ├── graph/knowledge-graph.ts
-│   ├── retrieval/
-│   │   ├── jina.ts           # Jina v5 semantic search
-│   │   └── hybrid.ts         # Fusion + decay + salience
-│   ├── consolidation/consolidator.ts
-│   └── web/server.ts         # Visual browser
-```
-
-</details>
-
-<details>
-<summary><strong>Configuration</strong></summary>
-
-Environment variables:
-
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `ENGRAM_DB_PATH` | Where to store data | `~/.engram/` |
-| `ANTHROPIC_API_KEY` | Enable consolidation | None (optional) |
-
-</details>
-
-<details>
-<summary><strong>Building from Source</strong></summary>
-
-```bash
-git clone https://github.com/199-biotechnologies/engram.git
-cd engram
-npm install
-npm run build
-npm install -g .
-```
-
-For semantic search, install the Jina embeddings package:
-
-```bash
-pip install jina-grep
-```
-
-This uses Jina v5 embeddings with MLX Metal acceleration (~9ms/query). If unavailable, Engram falls back to keyword-only search.
-
-</details>
-
-<details>
-<summary><strong>Performance</strong></summary>
+### Performance
 
 On M1 MacBook Air:
 
@@ -236,33 +206,80 @@ On M1 MacBook Air:
 
 Storage: ~1KB per memory.
 
-</details>
+---
+
+## Configuration
+
+Environment variables:
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `ENGRAM_DB_PATH` | Where to store data | `~/.engram/` |
+| `ANTHROPIC_API_KEY` | Enable memory consolidation | None (optional) |
+| `COLBERT_MODEL` | ColBERT reranking model | `colbert-ir/colbertv2.0` |
+| `EMBEDDING_MODEL` | Embedding model for semantic search | `Qwen/Qwen3-Embedding-0.6B` |
+| `MAX_MEMORY_CACHE` | In-memory cache size | `1000` |
+| `RETRIEVAL_TOP_K` | Initial retrieval pool size | `50` |
+| `RERANK_TOP_K` | Final results after reranking | `10` |
+| `ENGRAM_TRANSPORT` | Transport mode (`stdio` or `http`) | `stdio` |
+| `PORT` | HTTP port for remote deployment | `3000` |
+
+---
+
+## Building from Source
+
+```bash
+git clone https://github.com/199-biotechnologies/engram.git
+cd engram
+npm install
+npm run build
+npm install -g .
+```
+
+For semantic search with local embeddings:
+
+```bash
+pip install jina-grep
+```
+
+This uses Jina v5 embeddings with MLX Metal acceleration (~9ms/query). If unavailable, Engram falls back to keyword-only search.
 
 ---
 
 ## Roadmap
 
-- [x] Hybrid search (keywords + semantics)
-- [x] Knowledge graph with relationships
-- [x] Memory decay and strengthening
+- [x] Hybrid search (BM25 + semantic embeddings)
+- [x] Knowledge graph with entity relationships
+- [x] Memory decay and strengthening (Ebbinghaus curve)
 - [x] Consolidation with contradiction detection
-- [x] Web interface
+- [x] Web interface for visual memory browsing
 - [ ] Export and import
 - [ ] Scheduled consolidation
 
 ---
 
-## Author
+## Contributing
 
-**Boris Djordjevic**
-Founder, [199 Biotechnologies](https://199bio.com)
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE) -- Copyright (c) 2025 Boris Djordjevic, 199 Biotechnologies
 
 ---
 
 <p align="center">
-  <i>Built by <a href="https://github.com/199-biotechnologies">199 Biotechnologies</a></i>
+  Built by <a href="https://github.com/longevityboris">Boris Djordjevic</a> at <a href="https://github.com/199-biotechnologies">199 Biotechnologies</a> | <a href="https://paperfoot.ai">Paperfoot AI</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/199-biotechnologies/engram/stargazers">
+    <img src="https://img.shields.io/github/stars/199-biotechnologies/engram?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow" alt="GitHub Stars" />
+  </a>
+  &nbsp;
+  <a href="https://x.com/longevityboris">
+    <img src="https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow on X" />
+  </a>
 </p>
