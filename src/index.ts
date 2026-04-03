@@ -2,7 +2,7 @@
 /**
  * Engram - High-quality personal memory for AI assistants
  *
- * Local-first MCP server with Jina v5 + BM25 hybrid search
+ * Local-first MCP server with hybrid search (BM25 + semantic embeddings)
  * and a lightweight knowledge graph.
  */
 
@@ -95,9 +95,6 @@ function cleanup(): void {
     if (webServer) {
       webServer.stop();
     }
-    if (retriever && "stop" in retriever) {
-      (retriever as JinaRetriever).stop();
-    }
     if (db) {
       db.close();
     }
@@ -167,7 +164,6 @@ async function initialize(): Promise<void> {
   if (consolidator.isConfigured()) {
     console.error(`[Engram] Consolidation enabled (ANTHROPIC_API_KEY found)`);
   }
-
 }
 
 // ============ MCP Server ============
@@ -275,6 +271,25 @@ const TOOLS = [
         },
       },
       required: ["query"],
+    },
+    outputSchema: {
+      type: "object" as const,
+      properties: {
+        context: {
+          type: "array",
+          items: { type: "string" },
+          description: "Ranked list of relevant memories and digests",
+        },
+        _ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Memory IDs for feedback",
+        },
+        _recall: {
+          type: "string",
+          description: "Recall ID for memory_feedback",
+        },
+      },
     },
     annotations: {
       title: "Search Memories",
@@ -410,6 +425,42 @@ const TOOLS = [
       openWorldHint: false,
     },
   },
+  {
+    name: "export_memories",
+    description: "Export all memories, entities, and relationships as JSON for backup or migration.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    annotations: {
+      title: "Export Memories",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "import_memories",
+    description: "Import memories from a JSON export. Use for restoring backups or migrating data.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        data: {
+          type: "object",
+          description: "JSON object with memories, entities, relations, observations arrays",
+        },
+      },
+      required: ["data"],
+    },
+    annotations: {
+      title: "Import Memories",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
 ];
 
 // List available tools
@@ -441,6 +492,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           entities?: Array<{ name: string; type: "person" | "organization" | "place" }>;
           relationships?: Array<{ from: string; to: string; type: string }>;
         };
+
+        // Duplicate detection: check if very similar memory already exists
+        try {
+          const [embedding] = await retriever.embed([content]);
+          const similar = db.findSimilar(embedding, 0.92);
+          if (similar.length > 0) {
+            const existingMemory = db.getMemory(similar[0].memoryId);
+            if (existingMemory) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    success: false,
+                    duplicate: true,
+                    existing_id: existingMemory.id,
+                    existing_content: existingMemory.content,
+                    similarity: (1 - similar[0].distance).toFixed(3),
+                    message: "Very similar memory already exists. Use edit_memory to update it instead.",
+                  }, null, 2),
+                }],
+              };
+            }
+          }
+        } catch {
+          // If embedding fails, proceed without duplicate check
+        }
 
         // Create memory with new temporal and salience fields
         const memory = db.createMemory(content, source, importance, {
@@ -871,6 +948,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }, null, 2),
             },
           ],
+        };
+      }
+
+      case "export_memories": {
+        const data = db.exportAll();
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(data, null, 2),
+          }],
+        };
+      }
+
+      case "import_memories": {
+        const { data } = args as { data: any };
+        const result = db.importAll(data);
+        // Rebuild search index after import
+        await search.rebuildIndex();
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ success: true, ...result }),
+          }],
         };
       }
 
