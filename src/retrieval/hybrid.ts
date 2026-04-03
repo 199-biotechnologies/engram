@@ -113,8 +113,8 @@ export class HybridSearch {
   /**
    * Search using all available methods and fuse results
    *
-   * Strategy: BM25 gets candidates fast, semantic embedder reranks for quality
-   * This is both FASTER (fewer semantic embedder computations) and BETTER (combines keyword + semantic)
+   * Strategy: BM25 + vector KNN + graph run in parallel, fused via RRF
+   * Vectors are pre-computed in sqlite-vec so no reranking needed
    */
   async search(
     query: string,
@@ -128,7 +128,6 @@ export class HybridSearch {
       semanticWeight?: number;
       graphWeight?: number;
       connectionWeight?: number;     // Weight for connected memories in RRF
-      useReranking?: boolean;        // Use semantic embedder to rerank BM25 results
     } = {}
   ): Promise<HybridSearchResponse> {
     const {
@@ -141,7 +140,6 @@ export class HybridSearch {
       semanticWeight = 1.0,
       graphWeight = 0.3,
       connectionWeight = 0.5,
-      useReranking = true,
     } = options;
 
     // Generate recall_id for tracking
@@ -154,23 +152,12 @@ export class HybridSearch {
     // Fetch more candidates than needed for fusion
     const candidateLimit = Math.max(limit * 3, 30);
 
-    // Run BM25 and graph search in parallel (fast)
-    const [bm25Results, graphMemoryIds] = await Promise.all([
+    // Run BM25, vector search, and graph search in parallel (all fast)
+    const [bm25Results, semanticResults, graphMemoryIds] = await Promise.all([
       this.searchBM25(query, candidateLimit),
+      this.searchSemantic(query, candidateLimit),
       includeGraph ? this.searchGraph(query) : Promise.resolve([]),
     ]);
-
-    // For semantic: either rerank BM25 results (faster+better) or search full index
-    let semanticResults: Array<{ id: string; score: number }>;
-    if (useReranking && bm25Results.length > 0) {
-      // Rerank BM25 candidates with semantic embedder - faster AND better quality
-      const docs = bm25Results.map(r => ({ id: r.id, content: this.db.getMemory(r.id)?.content || '' }));
-      const reranked = await this.retriever.rerank(query, docs, candidateLimit);
-      semanticResults = reranked.map(r => ({ id: r.id, score: r.score }));
-    } else {
-      // Full semantic search
-      semanticResults = await this.searchSemantic(query, candidateLimit);
-    }
 
     // Fetch graph memories
     const graphMemories = graphMemoryIds.length > 0
