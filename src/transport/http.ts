@@ -4,8 +4,12 @@
  */
 
 import http from "http";
+import { createRequire } from "module";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+
+const require = createRequire(import.meta.url);
+const pkg = require("../../package.json");
 
 interface HttpServerOptions {
   port: number;
@@ -49,7 +53,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<http.
       res.end(JSON.stringify({
         status: "ok",
         transport: "http",
-        version: "0.10.0"
+        version: pkg.version
       }));
       return;
     }
@@ -60,7 +64,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<http.
       res.end(JSON.stringify({
         name: "engram",
         description: "MCP memory server with hybrid search",
-        version: "0.10.0",
+        version: pkg.version,
         transport: "streamable-http",
         endpoints: {
           mcp: "/mcp",
@@ -100,11 +104,12 @@ export async function startHttpServer(options: HttpServerOptions): Promise<http.
   // Start listening
   return new Promise((resolve, reject) => {
     httpServer.once("error", reject);
-    httpServer.listen(port, () => {
-      console.error(`[Engram] MCP HTTP server running on port ${port}`);
+    const host = process.env.ENGRAM_HOST || "127.0.0.1";
+    httpServer.listen(port, host, () => {
+      console.error(`[Engram] MCP HTTP server running on ${host}:${port}`);
       console.error(`[Engram] Endpoints:`);
-      console.error(`[Engram]   POST http://localhost:${port}/mcp - MCP protocol`);
-      console.error(`[Engram]   GET  http://localhost:${port}/health - Health check`);
+      console.error(`[Engram]   POST http://${host}:${port}/mcp - MCP protocol`);
+      console.error(`[Engram]   GET  http://${host}:${port}/health - Health check`);
       resolve(httpServer);
     });
   });

@@ -564,6 +564,11 @@ export class EngramDatabase {
     `).run(id);
   }
 
+  isMemoryActive(id: string): boolean {
+    const mem = this.getMemory(id);
+    return mem !== null && !mem.disabled;
+  }
+
   getAllMemories(limit: number = 1000, includeDisabled: boolean = false, offset: number = 0): Memory[] {
     const sql = includeDisabled
       ? "SELECT * FROM memories ORDER BY timestamp DESC LIMIT ? OFFSET ?"
@@ -609,16 +614,6 @@ export class EngramDatabase {
   }
 
   /**
-   * Get all episodes in a session
-   */
-  getSessionEpisodes(sessionId: string): Episode[] {
-    const rows = this.stmt(
-      "SELECT * FROM episodes WHERE session_id = ? ORDER BY turn_index"
-    ).all(sessionId) as Record<string, unknown>[];
-    return rows.map((row) => this.rowToEpisode(row));
-  }
-
-  /**
    * Get unconsolidated episodes for processing
    */
   getUnconsolidatedEpisodes(limit: number = 100): Episode[] {
@@ -636,25 +631,6 @@ export class EngramDatabase {
     for (const id of episodeIds) {
       stmt.run(id);
     }
-  }
-
-  /**
-   * Get recent sessions for context
-   */
-  getRecentSessions(limit: number = 10): Array<{ session_id: string; episode_count: number; last_activity: Date }> {
-    const rows = this.stmt(`
-      SELECT session_id, COUNT(*) as episode_count, MAX(timestamp) as last_activity
-      FROM episodes
-      GROUP BY session_id
-      ORDER BY last_activity DESC
-      LIMIT ?
-    `).all(limit) as Array<{ session_id: string; episode_count: number; last_activity: string }>;
-
-    return rows.map(r => ({
-      session_id: r.session_id,
-      episode_count: r.episode_count,
-      last_activity: new Date(r.last_activity),
-    }));
   }
 
   private rowToEpisode(row: Record<string, unknown>): Episode {
@@ -990,11 +966,6 @@ export class EngramDatabase {
     return rows.map((row) => this.rowToObservation(row));
   }
 
-  expireObservation(id: string): void {
-    const stmt = this.db.prepare("UPDATE observations SET valid_until = CURRENT_TIMESTAMP WHERE id = ?");
-    stmt.run(id);
-  }
-
   // ============ Relation Operations ============
 
   createRelation(
@@ -1215,12 +1186,6 @@ export class EngramDatabase {
 
     const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map((row) => this.rowToMemory(row));
-  }
-
-  deleteDigest(id: string): boolean {
-    const stmt = this.db.prepare("DELETE FROM digests WHERE id = ?");
-    const result = stmt.run(id);
-    return result.changes > 0;
   }
 
   // ============ Contradiction Operations ============
@@ -1650,29 +1615,6 @@ export class EngramDatabase {
     return value ? parseFloat(value) : defaultValue;
   }
 
-  /**
-   * Set a config value
-   */
-  setConfig(key: string, value: string): void {
-    this.db.prepare(`
-      INSERT INTO consolidation_config (key, value, updated_at)
-      VALUES (?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
-    `).run(key, value, value);
-  }
-
-  /**
-   * Get all config values
-   */
-  getAllConfig(): Record<string, string> {
-    const rows = this.stmt("SELECT key, value FROM consolidation_config").all() as Array<{ key: string; value: string }>;
-    const config: Record<string, string> = {};
-    for (const row of rows) {
-      config[row.key] = row.value;
-    }
-    return config;
-  }
-
   private rowToCheckpoint(row: Record<string, unknown>): ConsolidationCheckpoint {
     return {
       id: row.id as string,
@@ -1733,6 +1675,7 @@ export class EngramDatabase {
   // ============ Vector Operations (sqlite-vec) ============
 
   insertVector(memoryId: string, embedding: Float32Array): void {
+    this.deleteVector(memoryId);  // remove any existing vector first
     this.db.prepare(
       'INSERT INTO vec_memories(memory_id, embedding) VALUES (?, ?)'
     ).run(memoryId, Buffer.from(embedding.buffer));
@@ -1746,24 +1689,23 @@ export class EngramDatabase {
   }
 
   deleteVector(memoryId: string): void {
-    // sqlite-vec requires rowid for deletion, so we need to find it first
-    const row = this.db.prepare(
+    // sqlite-vec requires rowid for deletion, so we need to find all matching rows
+    const rows = this.db.prepare(
       'SELECT rowid FROM vec_memories WHERE memory_id = ?'
-    ).get(memoryId) as {rowid: number} | undefined;
-    if (row) {
-      this.db.prepare('DELETE FROM vec_memories WHERE rowid = ?').run(row.rowid);
-    }
+    ).all(memoryId) as Array<{rowid: number}>;
+    const del = this.db.prepare('DELETE FROM vec_memories WHERE rowid = ?');
+    for (const row of rows) del.run(row.rowid);
   }
 
   findSimilar(embedding: Float32Array, threshold: number): Array<{memoryId: string, distance: number}> {
     // Search for vectors within threshold distance (lower = more similar)
     // cosine distance: 0 = identical, 2 = opposite
     const results = this.searchVectors(embedding, 10);
-    return results.filter(r => r.distance < (1 - threshold) * 2);
+    return results.filter(r => r.distance < (1 - threshold));
   }
 
   getVectorCount(): number {
-    const row = this.db.prepare('SELECT count(*) as cnt FROM vec_memories').get() as {cnt: number};
+    const row = this.db.prepare('SELECT COUNT(DISTINCT memory_id) as cnt FROM vec_memories').get() as {cnt: number};
     return row.cnt;
   }
 
@@ -1819,14 +1761,14 @@ export class EngramDatabase {
           const ts = m.timestamp instanceof Date
             ? (m.timestamp as Date).toISOString()
             : m.timestamp as string;
-          this.db.prepare(
+          const result = this.db.prepare(
             `INSERT OR IGNORE INTO memories (id, content, source, timestamp, importance, emotional_weight, event_time) VALUES (?, ?, ?, ?, ?, ?, ?)`
           ).run(
             m.id, m.content, m.source || 'conversation', ts,
             m.importance ?? 0.5, m.emotional_weight ?? 0.5,
             m.event_time instanceof Date ? (m.event_time as Date).toISOString() : (m.event_time || null)
           );
-          count++;
+          count += result.changes;
         } catch { /* skip duplicates */ }
       }
       for (const e of data.entities || []) {
@@ -1834,10 +1776,10 @@ export class EngramDatabase {
           const createdAt = e.created_at instanceof Date
             ? (e.created_at as Date).toISOString()
             : e.created_at as string;
-          this.db.prepare(
+          const result = this.db.prepare(
             `INSERT OR IGNORE INTO entities (id, name, type, created_at) VALUES (?, ?, ?, ?)`
           ).run(e.id, e.name, e.type, createdAt);
-          count++;
+          count += result.changes;
         } catch { /* skip duplicates */ }
       }
       for (const r of data.relations || []) {
@@ -1845,10 +1787,10 @@ export class EngramDatabase {
           const createdAt = r.created_at instanceof Date
             ? (r.created_at as Date).toISOString()
             : r.created_at as string;
-          this.db.prepare(
+          const result = this.db.prepare(
             `INSERT OR IGNORE INTO relations (id, from_entity, to_entity, type, created_at) VALUES (?, ?, ?, ?, ?)`
           ).run(r.id, r.from_entity, r.to_entity, r.type, createdAt);
-          count++;
+          count += result.changes;
         } catch { /* skip duplicates */ }
       }
       for (const o of data.observations || []) {
@@ -1856,10 +1798,10 @@ export class EngramDatabase {
           const validFrom = o.valid_from instanceof Date
             ? (o.valid_from as Date).toISOString()
             : o.valid_from as string;
-          this.db.prepare(
+          const result = this.db.prepare(
             `INSERT OR IGNORE INTO observations (id, entity_id, content, source_memory_id, confidence, valid_from) VALUES (?, ?, ?, ?, ?, ?)`
           ).run(o.id, o.entity_id, o.content, o.source_memory_id, o.confidence ?? 1.0, validFrom);
-          count++;
+          count += result.changes;
         } catch { /* skip duplicates */ }
       }
     });

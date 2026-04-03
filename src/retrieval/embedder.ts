@@ -15,7 +15,6 @@ export interface Document {
 export interface SearchResult {
   id: string;
   score: number;
-  content: string;
 }
 
 // Database vector interface — implemented by EngramDatabase
@@ -31,8 +30,8 @@ const EMBEDDING_DIM = 384;
 
 export class TransformersEmbedder {
   private pipeline: any = null;
+  private pipelinePromise: Promise<void> | null = null;
   private db: VectorStore;
-  private documents: Map<string, string> = new Map(); // id -> content cache
 
   constructor(db: VectorStore) {
     this.db = db;
@@ -43,14 +42,18 @@ export class TransformersEmbedder {
    */
   private async ensurePipeline(): Promise<void> {
     if (this.pipeline) return;
+    if (this.pipelinePromise) return this.pipelinePromise;
 
-    console.error('[Engram] Loading embedding model (first use)...');
-    const { pipeline } = await import('@huggingface/transformers');
-    this.pipeline = await pipeline('feature-extraction', MODEL_NAME, {
-      // Use quantized model for faster inference
-      dtype: 'q8' as any,
-    });
-    console.error('[Engram] Embedding model loaded');
+    this.pipelinePromise = (async () => {
+      console.error('[Engram] Loading embedding model (first use)...');
+      const { pipeline } = await import('@huggingface/transformers');
+      this.pipeline = await pipeline('feature-extraction', MODEL_NAME, {
+        dtype: 'q8' as any,
+      });
+      console.error('[Engram] Embedding model loaded');
+    })();
+
+    return this.pipelinePromise;
   }
 
   /**
@@ -82,7 +85,6 @@ export class TransformersEmbedder {
 
     for (let i = 0; i < documents.length; i++) {
       this.db.insertVector(documents[i].id, embeddings[i]);
-      this.documents.set(documents[i].id, documents[i].content);
     }
 
     return { success: true, count: documents.length };
@@ -105,31 +107,7 @@ export class TransformersEmbedder {
     return results.map(r => ({
       id: r.memoryId,
       score: 1 - r.distance, // Convert distance to similarity
-      content: this.documents.get(r.memoryId) || '',
     }));
-  }
-
-  /**
-   * Rerank documents by embedding similarity
-   */
-  async rerank(query: string, documents: Document[], k: number = 10): Promise<SearchResult[]> {
-    const texts = [query, ...documents.map(d => d.content)];
-    const embeddings = await this.embed(texts);
-
-    const queryEmb = embeddings[0];
-    const scores: Array<{ id: string; score: number; content: string }> = [];
-
-    for (let i = 0; i < documents.length; i++) {
-      const docEmb = embeddings[i + 1];
-      // Cosine similarity (already normalized)
-      let dot = 0;
-      for (let j = 0; j < EMBEDDING_DIM; j++) {
-        dot += queryEmb[j] * docEmb[j];
-      }
-      scores.push({ id: documents[i].id, score: dot, content: documents[i].content });
-    }
-
-    return scores.sort((a, b) => b.score - a.score).slice(0, k);
   }
 
   /**
@@ -138,7 +116,6 @@ export class TransformersEmbedder {
   async delete(ids: string[]): Promise<{ success: boolean; count: number }> {
     for (const id of ids) {
       this.db.deleteVector(id);
-      this.documents.delete(id);
     }
     return { success: true, count: ids.length };
   }

@@ -1,19 +1,18 @@
 /**
  * Memory Consolidator
  *
- * Uses Sonnet 4.6 for batch memory consolidation (cost-efficient summarization)
- * and Opus 4.6 with extended thinking for entity profiles (deeper reasoning).
+ * Uses Sonnet 4.6 for batch memory consolidation (cost-efficient summarization).
  * Inspired by how the brain consolidates short-term memories into long-term
  * storage during sleep.
  *
- * Levels:
- * - L1: Session digests (consolidate recent memories) — Sonnet 4.6
- * - L2: Topic clusters (group related digests)
- * - L3: Entity profiles (comprehensive view of each entity) — Opus 4.6
+ * Sleep cycle phases:
+ * 1. Memories → Digests (consolidate recent memories into session digests)
+ * 2. Decay connections (reduce stale graph edges)
+ * 3. Cleanup (purge old retrieval logs)
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { EngramDatabase, Memory, Digest, Episode } from "../storage/database.js";
+import { EngramDatabase, Memory, Digest } from "../storage/database.js";
 import { getAnthropicApiKey } from "../settings.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
 import { HybridSearch } from "../retrieval/hybrid.js";
@@ -54,37 +53,6 @@ const CONSOLIDATION_SYSTEM = `You are a high-quality memory consolidation system
 - If memories span different time periods, note the evolution
 - Only flag true contradictions, not incomplete information or natural life changes`;
 
-const EPISODE_EXTRACTION_SYSTEM = `You are extracting structured memories from a conversation. Your goal is to identify facts, preferences, events, and relationships worth remembering.
-
-## What to Extract
-- Key facts about people, places, organizations
-- User preferences and opinions
-- Important events and their dates
-- Relationships between entities
-- Decisions made or plans discussed
-
-## What to Skip
-- Small talk and pleasantries
-- Repetitive information
-- Context that's only relevant to the immediate task
-- Technical details that don't reveal user preferences
-
-## Output Format (JSON)
-{
-  "memories": [
-    {
-      "content": "The actual memory to store (clear, standalone statement)",
-      "importance": 0.5,
-      "emotional_weight": 0.5,
-      "event_time": "2024-12-01 or null if not mentioned",
-      "entities": [{"name": "John", "type": "person"}],
-      "relationships": [{"from": "John", "to": "Acme Corp", "type": "works_at"}]
-    }
-  ]
-}
-
-Extract 0-5 memories. Quality over quantity. If nothing worth remembering, return empty memories array.`;
-
 interface ConsolidationResult {
   digest: string;
   topic: string;
@@ -92,19 +60,6 @@ interface ConsolidationResult {
     description: string;
     memory_ids: string[];
   }>;
-}
-
-interface ExtractedMemory {
-  content: string;
-  importance: number;
-  emotional_weight: number;
-  event_time: string | null;
-  entities: Array<{ name: string; type: string }>;
-  relationships: Array<{ from: string; to: string; type: string }>;
-}
-
-interface EpisodeExtractionResult {
-  memories: ExtractedMemory[];
 }
 
 interface ConsolidateOptions {
@@ -309,307 +264,24 @@ Create a detailed digest that preserves all important information. Respond with 
   }
 
   /**
-   * Create an entity profile by consolidating all observations about an entity
-   */
-  async consolidateEntity(entityId: string): Promise<Digest | null> {
-    const client = this.ensureClient();
-    if (!client) {
-      throw new Error("Consolidator not configured - set ANTHROPIC_API_KEY");
-    }
-
-    const entity = this.db.getEntity(entityId);
-    if (!entity) return null;
-
-    const observations = this.db.getEntityObservations(entityId);
-    if (observations.length < 2) return null;
-
-    // Get source memories for each observation
-    const memories: Memory[] = [];
-    for (const obs of observations) {
-      if (obs.source_memory_id) {
-        const mem = this.db.getMemory(obs.source_memory_id);
-        if (mem) memories.push(mem);
-      }
-    }
-
-    if (memories.length < 2) return null;
-
-    // Consolidate with entity context
-    const memoriesText = memories
-      .map(
-        (m) =>
-          `[${m.id}] (${m.timestamp.toISOString().split("T")[0]}) ${m.content}`
-      )
-      .join("\n\n");
-
-    const userPrompt = `Create a comprehensive, detailed profile for "${entity.name}" (${entity.type}).
-
-This profile will serve as the authoritative reference for everything known about this ${entity.type}. Include:
-- All biographical/descriptive facts
-- Relationships with other people/entities
-- Preferences, opinions, personality traits
-- Timeline of events and changes over time
-- Notable quotes or characteristic expressions
-- Any context that helps understand this ${entity.type}
-
-MEMORIES ABOUT ${entity.name}:
-${memoriesText}
-
-Create a rich, detailed profile. Do not summarize away important nuances. Respond with JSON only.`;
-
-    try {
-      const response = await client.messages.create({
-        model: "claude-opus-4-6-20250514",
-        max_tokens: 16000,
-        temperature: 1, // Required for extended thinking
-        thinking: {
-          type: "enabled",
-          budget_tokens: 16000, // Maximum thinking for entity profiles
-        },
-        messages: [
-          {
-            role: "user",
-            content: userPrompt,
-          },
-        ],
-        system: CONSOLIDATION_SYSTEM,
-      });
-
-      let text = "";
-      for (const block of response.content) {
-        if (block.type === "text") {
-          text = block.text;
-          break;
-        }
-      }
-
-      if (!text) return null;
-
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return null;
-
-      const result = JSON.parse(jsonMatch[0]) as ConsolidationResult;
-
-      // Create level 3 entity profile digest
-      const memoryIds = memories.map((m) => m.id);
-      const periodStart = new Date(
-        Math.min(...memories.map((m) => m.timestamp.getTime()))
-      );
-      const periodEnd = new Date(
-        Math.max(...memories.map((m) => m.timestamp.getTime()))
-      );
-
-      const digest = this.db.createDigest(result.digest, 3, memoryIds, {
-        topic: `Profile: ${entity.name}`,
-        entityId: entity.id,
-        periodStart,
-        periodEnd,
-      });
-
-      // Record any contradictions
-      for (const c of result.contradictions) {
-        if (c.memory_ids.length >= 2) {
-          const [idA, idB] = c.memory_ids.slice(0, 2);
-          const memA = memories.find((m) => m.id === idA);
-          const memB = memories.find((m) => m.id === idB);
-
-          if (memA && memB) {
-            this.db.createContradiction(
-              memA.id,
-              memB.id,
-              c.description,
-              entity.id
-            );
-          }
-        }
-      }
-
-      return digest;
-    } catch (error) {
-      console.error("[Consolidator] Entity profile failed:", error);
-      return null;
-    }
-  }
-
-  /**
    * Get consolidation status
    */
   getStatus(): {
     configured: boolean;
     unconsolidatedMemories: number;
-    unconsolidatedEpisodes: number;
     totalDigests: number;
     unresolvedContradictions: number;
   } {
     const unconsolidatedMem = this.db.getUnconsolidatedMemories(undefined, 1000);
-    const unconsolidatedEp = this.db.getUnconsolidatedEpisodes(1000);
     const digests = this.db.getDigests(undefined, 1000);
     const contradictions = this.db.getContradictions(false, 1000);
 
     return {
       configured: this.isConfigured(),
       unconsolidatedMemories: unconsolidatedMem.length,
-      unconsolidatedEpisodes: unconsolidatedEp.length,
       totalDigests: digests.length,
       unresolvedContradictions: contradictions.length,
     };
-  }
-
-  /**
-   * Process unconsolidated episodes into memories
-   * This is the "working memory → long-term memory" transfer
-   */
-  async consolidateEpisodes(options: {
-    minEpisodes?: number;
-    batchSize?: number;
-  } = {}): Promise<{
-    episodesProcessed: number;
-    memoriesCreated: number;
-    entitiesCreated: number;
-  }> {
-    const client = this.ensureClient();
-    if (!client) {
-      throw new Error("Consolidator not configured - set ANTHROPIC_API_KEY");
-    }
-
-    const { minEpisodes = 4, batchSize = 20 } = options;
-
-    // Get unconsolidated episodes
-    const episodes = this.db.getUnconsolidatedEpisodes(batchSize);
-
-    if (episodes.length < minEpisodes) {
-      return { episodesProcessed: 0, memoriesCreated: 0, entitiesCreated: 0 };
-    }
-
-    // Group by session for context
-    const sessionGroups = new Map<string, Episode[]>();
-    for (const ep of episodes) {
-      const existing = sessionGroups.get(ep.session_id) || [];
-      existing.push(ep);
-      sessionGroups.set(ep.session_id, existing);
-    }
-
-    let episodesProcessed = 0;
-    let memoriesCreated = 0;
-    let entitiesCreated = 0;
-
-    // Process each session
-    for (const [sessionId, sessionEpisodes] of sessionGroups) {
-      if (sessionEpisodes.length < 2) continue;
-
-      try {
-        const result = await this.extractMemoriesFromEpisodes(sessionEpisodes);
-
-        if (result && result.memories.length > 0) {
-          for (const mem of result.memories) {
-            // Create the memory
-            const memory = this.db.createMemory(
-              mem.content,
-              "episode_consolidation",
-              mem.importance,
-              {
-                eventTime: mem.event_time ? new Date(mem.event_time) : undefined,
-                emotionalWeight: mem.emotional_weight,
-              }
-            );
-            memoriesCreated++;
-
-            // Index for search
-            if (this.search) {
-              await this.search.indexMemory(memory);
-            }
-
-            // Create entities and relationships
-            if (this.graph) {
-              for (const ent of mem.entities || []) {
-                const entity = this.graph.getOrCreateEntity(
-                  ent.name,
-                  ent.type as "person" | "place" | "concept" | "event" | "organization"
-                );
-                this.db.addObservation(entity.id, mem.content, memory.id, 1.0);
-                entitiesCreated++;
-              }
-
-              for (const rel of mem.relationships || []) {
-                try {
-                  const fromEntity = this.graph.getOrCreateEntity(rel.from, "person");
-                  const toEntity = this.graph.getOrCreateEntity(rel.to, "person");
-                  this.graph.relate(fromEntity.name, toEntity.name, rel.type);
-                } catch {
-                  // Skip invalid relationships
-                }
-              }
-            }
-          }
-        }
-
-        // Mark episodes as consolidated
-        this.db.markEpisodesConsolidated(sessionEpisodes.map(e => e.id));
-        episodesProcessed += sessionEpisodes.length;
-
-      } catch (error) {
-        console.error("[Consolidator] Episode consolidation failed:", error);
-      }
-    }
-
-    return { episodesProcessed, memoriesCreated, entitiesCreated };
-  }
-
-  /**
-   * Extract memories from conversation episodes using Sonnet 4.6 (fast, affordable)
-   */
-  private async extractMemoriesFromEpisodes(
-    episodes: Episode[]
-  ): Promise<EpisodeExtractionResult | null> {
-    const client = this.ensureClient();
-    if (!client) return null;
-
-    // Format conversation
-    const conversationText = episodes
-      .sort((a, b) => a.turn_index - b.turn_index)
-      .map(ep => `${ep.role.toUpperCase()}: ${ep.content}`)
-      .join("\n\n");
-
-    const userPrompt = `Extract memorable facts from this conversation.
-
-CONVERSATION:
-${conversationText}
-
-Remember: Only extract information worth remembering long-term. Skip transient task details.
-Respond with JSON only.`;
-
-    try {
-      // Use Sonnet 4.6 for speed/cost (no extended thinking needed)
-      const response = await client.messages.create({
-        model: "claude-sonnet-4-6-20250514",
-        max_tokens: 4000,
-        messages: [
-          {
-            role: "user",
-            content: userPrompt,
-          },
-        ],
-        system: EPISODE_EXTRACTION_SYSTEM,
-      });
-
-      let text = "";
-      for (const block of response.content) {
-        if (block.type === "text") {
-          text = block.text;
-          break;
-        }
-      }
-
-      if (!text) return null;
-
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return null;
-
-      return JSON.parse(jsonMatch[0]) as EpisodeExtractionResult;
-    } catch (error) {
-      console.error("[Consolidator] Episode extraction failed:", error);
-      return null;
-    }
   }
 
   /**
@@ -625,21 +297,19 @@ Respond with JSON only.`;
    * This is the "sleep cycle" that should run periodically
    *
    * SOP (Standard Operating Procedure):
-   * 1. Assess backlog and check budget
-   * 2. Check for incomplete runs to resume
-   * 3. Create checkpoint for tracking
-   * 4. Process with rate limiting and validation
-   * 5. Check rollback triggers after each batch
-   * 6. Mark complete or fail with error
+   * 1. Assess backlog and check for incomplete runs
+   * 2. Create checkpoint for tracking
+   * 3. Process with rate limiting and validation
+   * 4. Check rollback triggers after each batch
+   * 5. Mark complete or fail with error
    */
   async runSleepCycle(options: {
     force?: boolean;      // Ignore budget limits
     maxBatches?: number;  // Override max batches
   } = {}): Promise<{
-    episodesProcessed: number;
-    memoriesCreated: number;
     digestsCreated: number;
     contradictionsFound: number;
+    memoriesProcessed: number;
     connectionsDecayed: number;
     logsCleanedUp: number;
     tokensUsed: number;
@@ -658,28 +328,10 @@ Respond with JSON only.`;
 
     // Assess backlog
     const assessment = plan.assessBacklog();
-    console.error(`[Consolidator] Assessment: ${assessment.unconsolidatedEpisodes} episodes, ${assessment.unconsolidatedMemories} memories`);
-    console.error(`[Consolidator] Budget: $${assessment.dailySpent.toFixed(2)} / $${assessment.dailyBudget.toFixed(2)} (remaining: $${assessment.budgetRemaining.toFixed(2)})`);
+    console.error(`[Consolidator] Assessment: ${assessment.unconsolidatedMemories} memories`);
 
     if (assessment.isRecoveryMode) {
       console.error(`[Consolidator] RECOVERY MODE: Large backlog detected, processing conservatively`);
-    }
-
-    // Check if we can proceed
-    if (!options.force && !assessment.canProceed) {
-      console.error(`[Consolidator] Budget exceeded, skipping consolidation`);
-      return {
-        episodesProcessed: 0,
-        memoriesCreated: 0,
-        digestsCreated: 0,
-        contradictionsFound: 0,
-        connectionsDecayed: 0,
-        logsCleanedUp: 0,
-        tokensUsed: 0,
-        estimatedCost: 0,
-        aborted: true,
-        abortReason: "Daily budget exceeded",
-      };
     }
 
     const maxBatches = options.maxBatches ?? assessment.recommendedBatches;
@@ -689,135 +341,23 @@ Respond with JSON only.`;
     let abortReason: string | undefined;
 
     // Create checkpoint
-    const totalBatches = assessment.phases
-      .filter(p => p.phase === "episodes" || p.phase === "memories")
-      .reduce((sum, p) => sum + Math.min(p.batchCount, maxBatches), 0);
+    const memoryPhase = assessment.phases.find(p => p.phase === "memories");
+    const totalBatches = memoryPhase ? Math.min(memoryPhase.batchCount, maxBatches) : 0;
 
     if (!incomplete) {
-      plan.createCheckpoint("episodes", totalBatches);
+      plan.createCheckpoint("memories", totalBatches);
     }
 
-    console.error(`[Consolidator] Starting sleep cycle (max ${maxBatches} batches per phase)...`);
+    console.error(`[Consolidator] Starting sleep cycle (max ${maxBatches} batches)...`);
 
-    // ============ Phase 1: Episodes → Memories ============
-    let episodesProcessed = incomplete?.episodes_processed || 0;
-    let memoriesCreated = 0;
-    let entitiesCreated = 0;
-
-    if (assessment.unconsolidatedEpisodes >= 4 && !aborted) {
-      plan.updateProgress({ phase: "episodes" });
-      console.error(`[Consolidator] Phase 1: Processing episodes...`);
-
-      const episodeBatchSize = 20;
-      const episodes = plan.getPrioritizedEpisodes(maxBatches * episodeBatchSize);
-
-      // Group by session
-      const sessionGroups = new Map<string, Episode[]>();
-      for (const ep of episodes) {
-        const existing = sessionGroups.get(ep.session_id) || [];
-        existing.push(ep);
-        sessionGroups.set(ep.session_id, existing);
-      }
-
-      let batchIndex = 0;
-      for (const [sessionId, sessionEpisodes] of sessionGroups) {
-        if (batchIndex >= maxBatches) break;
-        if (sessionEpisodes.length < 2) continue;
-
-        try {
-          // Rate limiting delay
-          if (batchIndex > 0) {
-            await plan.delay();
-          }
-
-          const result = await this.extractMemoriesFromEpisodes(sessionEpisodes);
-          plan.recordApiCall(result !== null);
-
-          if (result && result.memories.length > 0) {
-            for (const mem of result.memories) {
-              const memory = this.db.createMemory(
-                mem.content,
-                "episode_consolidation",
-                mem.importance,
-                {
-                  eventTime: mem.event_time ? new Date(mem.event_time) : undefined,
-                  emotionalWeight: mem.emotional_weight,
-                }
-              );
-              memoriesCreated++;
-
-              if (this.search) {
-                await this.search.indexMemory(memory);
-              }
-
-              if (this.graph) {
-                for (const ent of mem.entities || []) {
-                  const entity = this.graph.getOrCreateEntity(
-                    ent.name,
-                    ent.type as "person" | "place" | "concept" | "event" | "organization"
-                  );
-                  this.db.addObservation(entity.id, mem.content, memory.id, 1.0);
-                  entitiesCreated++;
-                }
-
-                for (const rel of mem.relationships || []) {
-                  try {
-                    const fromEntity = this.graph.getOrCreateEntity(rel.from, "person");
-                    const toEntity = this.graph.getOrCreateEntity(rel.to, "person");
-                    this.graph.relate(fromEntity.name, toEntity.name, rel.type);
-                  } catch {
-                    // Skip invalid relationships
-                  }
-                }
-              }
-            }
-          }
-
-          this.db.markEpisodesConsolidated(sessionEpisodes.map(e => e.id));
-          episodesProcessed += sessionEpisodes.length;
-          batchIndex++;
-
-          // Estimate tokens (Sonnet 4.6)
-          const batchTokens = 3000; // Conservative estimate
-          totalTokens += batchTokens;
-          totalCost += plan.calculateCost("sonnet", 2000, 1000);
-
-          plan.updateProgress({
-            batchesCompleted: batchIndex,
-            episodesProcessed,
-            tokensUsed: totalTokens,
-            estimatedCost: totalCost,
-          });
-
-          // Check rollback triggers
-          const triggers = plan.checkRollbackTriggers();
-          const fired = triggers.filter(t => t.triggered);
-          if (fired.length > 0) {
-            aborted = true;
-            abortReason = fired.map(t => t.message).join("; ");
-            console.error(`[Consolidator] ROLLBACK TRIGGERED: ${abortReason}`);
-            break;
-          }
-
-        } catch (error) {
-          const errMsg = error instanceof Error ? error.message : String(error);
-          plan.recordError(errMsg);
-          plan.recordApiCall(false);
-          console.error(`[Consolidator] Episode batch failed: ${errMsg}`);
-        }
-      }
-
-      console.error(`[Consolidator] Episodes: ${episodesProcessed} → ${memoriesCreated} memories`);
-    }
-
-    // ============ Phase 2: Memories → Digests ============
+    // ============ Phase 1: Memories → Digests ============
     let digestsCreated = incomplete?.digests_created || 0;
     let contradictionsFound = incomplete?.contradictions_found || 0;
-    let memoriesConsolidated = incomplete?.memories_processed || 0;
+    let memoriesProcessed = incomplete?.memories_processed || 0;
 
     if (assessment.unconsolidatedMemories >= 5 && !aborted) {
       plan.updateProgress({ phase: "memories" });
-      console.error(`[Consolidator] Phase 2: Consolidating memories...`);
+      console.error(`[Consolidator] Phase 1: Consolidating memories...`);
 
       const batchSize = 15;
       const memories = plan.getPrioritizedMemories(maxBatches * batchSize);
@@ -849,7 +389,7 @@ Respond with JSON only.`;
               periodEnd,
             });
             digestsCreated++;
-            memoriesConsolidated += batch.length;
+            memoriesProcessed += batch.length;
 
             for (const c of result.contradictions) {
               if (c.memory_ids.length >= 2) {
@@ -868,11 +408,11 @@ Respond with JSON only.`;
           // Estimate tokens (Sonnet without thinking)
           const batchTokens = 5000; // Conservative estimate
           totalTokens += batchTokens;
-          totalCost += plan.calculateCost("sonnet", 3000, 2000);
+          totalCost += plan.calculateCost(3000, 2000);
 
           plan.updateProgress({
             batchesCompleted: (i / batchSize) + 1,
-            memoriesProcessed: memoriesConsolidated,
+            memoriesProcessed,
             digestsCreated,
             contradictionsFound,
             tokensUsed: totalTokens,
@@ -897,10 +437,10 @@ Respond with JSON only.`;
         }
       }
 
-      console.error(`[Consolidator] Memories: ${memoriesConsolidated} → ${digestsCreated} digests`);
+      console.error(`[Consolidator] Memories: ${memoriesProcessed} → ${digestsCreated} digests`);
     }
 
-    // ============ Phase 3: Decay connections ============
+    // ============ Phase 2: Decay connections ============
     let connectionsDecayed = 0;
     if (!aborted) {
       plan.updateProgress({ phase: "decay" });
@@ -908,7 +448,7 @@ Respond with JSON only.`;
       console.error(`[Consolidator] Connections decayed: ${connectionsDecayed}`);
     }
 
-    // ============ Phase 4: Cleanup ============
+    // ============ Phase 3: Cleanup ============
     let logsCleanedUp = 0;
     if (!aborted) {
       plan.updateProgress({ phase: "cleanup" });
@@ -926,10 +466,9 @@ Respond with JSON only.`;
     console.error(`[Consolidator] Sleep cycle complete. Tokens: ${totalTokens}, Cost: $${totalCost.toFixed(4)}`);
 
     return {
-      episodesProcessed,
-      memoriesCreated,
       digestsCreated,
       contradictionsFound,
+      memoriesProcessed,
       connectionsDecayed,
       logsCleanedUp,
       tokensUsed: totalTokens,
@@ -959,7 +498,6 @@ Respond with JSON only.`;
         batchesCompleted: recent[0].batches_completed,
         batchesTotal: recent[0].batches_total,
         memoriesProcessed: recent[0].memories_processed,
-        episodesProcessed: recent[0].episodes_processed,
         digestsCreated: recent[0].digests_created,
         contradictionsFound: recent[0].contradictions_found,
         tokensUsed: recent[0].tokens_used,

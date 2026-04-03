@@ -16,7 +16,6 @@ export interface HybridSearchResult {
     bm25?: number;
     semantic?: number;
     graph?: number;
-    connected?: number;  // Rank from Hebbian connections
   };
 }
 
@@ -121,33 +120,21 @@ export class HybridSearch {
     options: {
       limit?: number;
       includeGraph?: boolean;
-      includeConnections?: boolean;  // Include Hebbian-connected memories
-      connectionBudget?: number;     // How many results to allocate to connections (default: 30%)
-      minConnectionStrength?: number; // Minimum strength to include connections
       bm25Weight?: number;
       semanticWeight?: number;
       graphWeight?: number;
-      connectionWeight?: number;     // Weight for connected memories in RRF
     } = {}
   ): Promise<HybridSearchResponse> {
     const {
       limit = 10,
       includeGraph = true,
-      includeConnections = true,
-      connectionBudget = 0.3,        // 30% of results can be connected memories
-      minConnectionStrength = 0.3,
       bm25Weight = 1.0,
       semanticWeight = 1.0,
       graphWeight = 0.3,
-      connectionWeight = 0.5,
     } = options;
 
     // Generate recall_id for tracking
     const recallId = this.generateRecallId();
-
-    // Calculate budgets: 70% direct results, 30% connected
-    const directBudget = Math.ceil(limit * (1 - connectionBudget));
-    const connectedBudget = limit - directBudget;
 
     // Fetch more candidates than needed for fusion
     const candidateLimit = Math.max(limit * 3, 30);
@@ -159,9 +146,9 @@ export class HybridSearch {
       includeGraph ? this.searchGraph(query) : Promise.resolve([]),
     ]);
 
-    // Fetch graph memories
+    // Fetch graph memories (filter out disabled)
     const graphMemories = graphMemoryIds.length > 0
-      ? graphMemoryIds.map(id => this.db.getMemory(id)).filter(Boolean) as Memory[]
+      ? graphMemoryIds.map(id => this.db.getMemory(id)).filter((m): m is Memory => m !== null && !m.disabled)
       : [];
 
     // Combine all candidate IDs
@@ -183,7 +170,7 @@ export class HybridSearch {
     const digestResults = this.searchDigests(query, 3);
 
     // Create rankings for RRF
-    const rankings: Map<string, { bm25?: number; semantic?: number; graph?: number; connected?: number }> = new Map();
+    const rankings: Map<string, { bm25?: number; semantic?: number; graph?: number }> = new Map();
 
     // BM25 ranking
     bm25Results.forEach((result, rank) => {
@@ -208,7 +195,7 @@ export class HybridSearch {
 
     // Calculate RRF scores
     const k = 60; // RRF constant
-    const rrfScores: Array<{ id: string; score: number; sources: { bm25?: number; semantic?: number; graph?: number; connected?: number } }> = [];
+    const rrfScores: Array<{ id: string; score: number; sources: { bm25?: number; semantic?: number; graph?: number } }> = [];
 
     for (const [id, ranks] of rankings) {
       let score = 0;
@@ -235,7 +222,7 @@ export class HybridSearch {
 
     for (const { id, score, sources } of rrfScores) {
       const memory = this.db.getMemory(id);
-      if (memory) {
+      if (memory && !memory.disabled) {
         // Apply Ebbinghaus decay and salience scoring
         const { adjusted, retention } = adjustScore(memory, score, now);
 
@@ -252,44 +239,12 @@ export class HybridSearch {
     // Re-sort by adjusted score (accounts for recency/stability)
     adjustedResults.sort((a, b) => b.score - a.score);
 
-    // Take top direct results
-    const directResults = adjustedResults.slice(0, directBudget);
-    const directIds = directResults.map(r => r.memory.id);
+    // Take top results
+    const topResults = adjustedResults.slice(0, limit);
 
-    // Find Hebbian-connected memories (not already in direct results)
-    let connectedMemories: Array<{ memory: Memory; connected_to: string; strength: number }> = [];
-    if (includeConnections && directIds.length > 0) {
-      const connectedIds = this.db.getConnectedMemoryIds(directIds, minConnectionStrength, connectedBudget * 2);
-
-      for (const connId of connectedIds) {
-        if (directIds.includes(connId)) continue;
-
-        const memory = this.db.getMemory(connId);
-        if (!memory) continue;
-
-        // Find which direct result this is connected to
-        const connections = this.db.getMemoryConnections(connId, minConnectionStrength);
-        const connectedTo = connections.find(c =>
-          directIds.includes(c.memory_a === connId ? c.memory_b : c.memory_a)
-        );
-
-        if (connectedTo) {
-          connectedMemories.push({
-            memory,
-            connected_to: connectedTo.memory_a === connId ? connectedTo.memory_b : connectedTo.memory_a,
-            strength: connectedTo.strength,
-          });
-        }
-      }
-
-      // Sort by strength and limit
-      connectedMemories.sort((a, b) => b.strength - a.strength);
-      connectedMemories = connectedMemories.slice(0, connectedBudget);
-    }
-
-    // Build final results (direct + space for connected)
+    // Build final results
     const results: HybridSearchResult[] = [];
-    for (const result of directResults) {
+    for (const result of topResults) {
       // Update access count (which also increases stability for future searches)
       this.db.touchMemory(result.memory.id);
 
@@ -301,28 +256,8 @@ export class HybridSearch {
       });
     }
 
-    // Add connected memories to results with their own scores
-    for (const { memory, strength } of connectedMemories) {
-      const baseScore = strength * connectionWeight;
-      const { adjusted, retention } = adjustScore(memory, baseScore, now);
-
-      this.db.touchMemory(memory.id);
-
-      results.push({
-        memory,
-        score: adjusted,
-        retention,
-        sources: { connected: 1 },
-      });
-    }
-
-    // Track co-retrieval for Hebbian learning (all result IDs)
-    const allResultIds = results.map(r => r.memory.id);
-    if (allResultIds.length >= 2) {
-      this.db.recordCoRetrieval(allResultIds);
-    }
-
     // Log this retrieval for deferred learning
+    const allResultIds = results.map(r => r.memory.id);
     try {
       this.db.createRetrievalLog(this.sessionId, recallId, query, allResultIds);
     } catch (error) {
@@ -354,7 +289,7 @@ export class HybridSearch {
       results: finalResults,
       digests: digestResults,
       recall_id: recallId,
-      connected_memories: connectedMemories,
+      connected_memories: [],
     };
   }
 
@@ -405,18 +340,14 @@ export class HybridSearch {
       return { results: [], digests: [], recall_id: recallId, connected_memories: [] };
     }
 
-    // Search again with relaxed parameters
+    // Search again with expanded limit
     const response = await this.search(log.query, {
       limit: additionalLimit + log.memory_ids.length,
-      includeConnections: true,
-      minConnectionStrength: 0.1,  // Lower threshold
-      connectionBudget: 0.5,       // More connected memories
     });
 
     // Filter out memories already returned
     const existingIds = new Set(log.memory_ids);
     response.results = response.results.filter(r => !existingIds.has(r.memory.id));
-    response.connected_memories = response.connected_memories.filter(c => !existingIds.has(c.memory.id));
 
     return response;
   }
@@ -505,15 +436,25 @@ export class HybridSearch {
    * Rebuild the entire semantic index
    */
   async rebuildIndex(): Promise<{ count: number }> {
-    const memories = this.db.getAllMemories();
+    this.db.clearAllVectors();
+    const batchSize = 500;
+    let offset = 0;
+    let total = 0;
 
-    const documents: Document[] = memories.map(m => ({
-      id: m.id,
-      content: m.content,
-    }));
+    for (;;) {
+      const batch = this.db.getAllMemories(batchSize, false, offset);
+      if (batch.length === 0) break;
+      const documents: Document[] = batch.map(m => ({
+        id: m.id,
+        content: m.content,
+      }));
+      await this.retriever.add(documents);
+      total += batch.length;
+      offset += batch.length;
+      console.error(`[Engram] Rebuilt index: ${total} memories...`);
+    }
 
-    const result = await this.retriever.index(documents);
-    return { count: result.count };
+    return { count: total };
   }
 
   /**

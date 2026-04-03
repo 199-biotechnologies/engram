@@ -23,7 +23,7 @@ const pkg = require("../package.json");
 import { getTransportMode, getHttpPort } from "./transport/index.js";
 import { startHttpServer } from "./transport/http.js";
 
-import { EngramDatabase } from "./storage/database.js";
+import { EngramDatabase, Memory } from "./storage/database.js";
 import { KnowledgeGraph } from "./graph/knowledge-graph.js";
 import { createEmbedder, TransformersEmbedder } from "./retrieval/embedder.js";
 import { HybridSearch } from "./retrieval/hybrid.js";
@@ -110,10 +110,7 @@ function cleanup(): void {
 function gracefulExit(reason: string): void {
   console.error(`[Engram] ${reason}`);
   cleanup();
-  // Force immediate exit to avoid ONNX/native module destructor crashes
-  // The mutex error in libc++ happens during normal Node.js teardown;
-  // _exit bypasses destructors entirely
-  process.kill(process.pid, "SIGKILL");
+  process.exit(0);
 }
 
 // Register signal handlers early
@@ -174,8 +171,16 @@ async function initialize(): Promise<void> {
       (async () => {
         try {
           const indexedIds = db.getIndexedMemoryIds();
-          const memories = db.getAllMemories();
-          const toIndex = memories.filter(m => !indexedIds.has(m.id));
+          const toIndex: Memory[] = [];
+          let offset = 0;
+          for (;;) {
+            const batch = db.getAllMemories(1000, false, offset);
+            if (batch.length === 0) break;
+            for (const m of batch) {
+              if (!indexedIds.has(m.id)) toIndex.push(m);
+            }
+            offset += batch.length;
+          }
           if (toIndex.length > 0) {
             await search.indexBatch(toIndex);
             console.error(`[Engram] Background indexing complete: ${toIndex.length} memories indexed`);
@@ -275,7 +280,7 @@ const TOOLS = [
   {
     name: "recall",
     description:
-      "Search stored memories. Call this at the START of every conversation and before answering any question about the user, their preferences, history, people they know, or anything previously discussed. Also call before remember to avoid storing duplicates. After using recalled memories to answer, call memory_feedback with which memories helped.",
+      "Search stored memories. Call this at the START of every conversation and before answering any question about the user, their preferences, history, people they know, or anything previously discussed. Also call before remember to avoid storing duplicates.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -307,11 +312,7 @@ const TOOLS = [
         _ids: {
           type: "array",
           items: { type: "string" },
-          description: "Memory IDs for feedback",
-        },
-        _recall: {
-          type: "string",
-          description: "Recall ID for memory_feedback",
+          description: "Memory IDs for reference",
         },
       },
     },
@@ -404,8 +405,8 @@ const TOOLS = [
       properties: {
         mode: {
           type: "string",
-          enum: ["full", "episodes_only", "memories_only"],
-          description: "What to consolidate: 'full' (default) runs everything, 'episodes_only' just processes conversation history, 'memories_only' creates digests",
+          enum: ["full", "memories_only"],
+          description: "What to consolidate: 'full' (default) runs everything, 'memories_only' creates digests",
           default: "full",
         },
       },
@@ -416,37 +417,6 @@ const TOOLS = [
       destructiveHint: false,
       idempotentHint: false,
       openWorldHint: true,  // Calls Anthropic API for consolidation
-    },
-  },
-  {
-    name: "memory_feedback",
-    description: "Report which recalled memories were useful for answering the user's question. Call this EVERY TIME after using recall results — it teaches the memory system which memories work well together (Hebbian learning), making future recalls more accurate. Pass the recall_id and the IDs of memories you actually used.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        recall_id: {
-          type: "string",
-          description: "The recall_id from the recall response",
-        },
-        useful_memory_ids: {
-          type: "array",
-          items: { type: "string" },
-          description: "IDs of memories that actually helped answer the question. Empty array if none were useful.",
-        },
-        need_more: {
-          type: "boolean",
-          description: "Set true if the memories were insufficient and you need a deeper search with more results",
-          default: false,
-        },
-      },
-      required: ["recall_id", "useful_memory_ids"],
-    },
-    annotations: {
-      title: "Memory Feedback",
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
     },
   },
   {
@@ -644,15 +614,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return year === currentYear ? `${month} ${day}` : `${month} ${day} '${String(year).slice(-2)}`;
         };
 
-        // Add memories as simple dated entries, track IDs for feedback
+        // Add memories as simple dated entries, track IDs
         const memoryIds: string[] = [];
         for (const r of response.results) {
+          if (r.memory.disabled) continue;
           context.push(`${formatDate(r.memory.timestamp)}: ${r.memory.content}`);
           memoryIds.push(r.memory.id);
         }
 
-        // Add connected memories
+        // Add connected memories (skip any disabled ones that leaked through)
         for (const c of response.connected_memories) {
+          if (c.memory.disabled) continue;
           context.push(`${formatDate(c.memory.timestamp)}: ${c.memory.content}`);
           memoryIds.push(c.memory.id);
         }
@@ -660,11 +632,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Check if consolidation is needed
         const unconsolidated = db.countUnconsolidatedMemories();
 
-        // Lean response with feedback support
         const result: Record<string, unknown> = {
           context,
           _ids: memoryIds,
-          _recall: response.recall_id,
         };
 
         // Only add consolidation hint if needed (≥20 unconsolidated)
@@ -814,7 +784,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "consolidate": {
-        const { mode = "full" } = args as { mode?: "full" | "episodes_only" | "memories_only" };
+        const { mode = "full" } = args as { mode?: "full" | "memories_only" };
 
         if (!consolidator.isConfigured()) {
           return {
@@ -833,9 +803,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         let result;
         switch (mode) {
-          case "episodes_only":
-            result = await consolidator.consolidateEpisodes();
-            break;
           case "memories_only":
             result = await consolidator.consolidate();
             break;
@@ -853,122 +820,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 success: true,
                 mode,
                 ...result,
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "memory_feedback": {
-        const { recall_id, useful_memory_ids, need_more = false } = args as {
-          recall_id: string;
-          useful_memory_ids: string[];
-          need_more?: boolean;
-        };
-
-        // First, get the original recall to validate useful_memory_ids
-        const retrievalLog = db.getRetrievalLog(recall_id);
-        if (!retrievalLog) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: false,
-                  error: `Recall ID not found: ${recall_id}`,
-                }),
-              },
-            ],
-          };
-        }
-
-        // Validate: only accept IDs that were in the original recall
-        const originalIdSet = new Set(retrievalLog.memory_ids);
-        const validUsefulIds = useful_memory_ids.filter(id => originalIdSet.has(id));
-        const invalidIds = useful_memory_ids.filter(id => !originalIdSet.has(id));
-
-        if (invalidIds.length > 0) {
-          console.error(`[Engram] memory_feedback: ${invalidIds.length} IDs not in original recall, ignored: ${invalidIds.join(", ")}`);
-        }
-
-        // Update the retrieval log with validated feedback
-        const updated = db.updateRetrievalFeedback(recall_id, validUsefulIds, need_more);
-
-        if (!updated) {
-          // Should not happen since we already checked above, but handle gracefully
-          console.error(`[Engram] memory_feedback: failed to update retrieval log ${recall_id}`);
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: false,
-                  error: `Failed to update feedback for: ${recall_id}`,
-                }),
-              },
-            ],
-          };
-        }
-
-        // If need_more is set, do an expanded search
-        if (need_more) {
-          const expandedResponse = await search.expandSearch(recall_id);
-
-          const formatted = expandedResponse.results.map((r) => ({
-            id: r.memory.id,
-            content: r.memory.content,
-            source: r.memory.source,
-            timestamp: r.memory.timestamp.toISOString(),
-            relevance_score: r.score.toFixed(4),
-            matched_via: Object.entries(r.sources)
-              .filter(([, v]) => v !== undefined)
-              .map(([k]) => k)
-              .join(", "),
-          }));
-
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: true,
-                  feedback_recorded: true,
-                  useful_count: validUsefulIds.length,
-                  expanded_search: true,
-                  additional_results: formatted,
-                  additional_count: formatted.length,
-                }, null, 2),
-              },
-            ],
-          };
-        }
-
-        // Process deferred learning if we have enough feedback
-        const unprocessed = db.getUnprocessedRetrievalLogs(50);
-        let learningApplied = 0;
-
-        for (const log of unprocessed) {
-          if (log.useful_ids && log.useful_ids.length >= 2) {
-            // Strengthen connections between useful memories
-            db.recordCoUseful(log.useful_ids);
-            learningApplied++;
-          }
-        }
-
-        if (unprocessed.length > 0) {
-          db.markRetrievalLogsProcessed(unprocessed.map(l => l.id));
-        }
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                success: true,
-                feedback_recorded: true,
-                useful_count: validUsefulIds.length,
-                learning_applied: learningApplied > 0,
-                connections_strengthened: learningApplied,
               }, null, 2),
             },
           ],

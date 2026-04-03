@@ -1,66 +1,39 @@
 /**
  * Consolidation Plan
  *
- * Implements a Standard Operating Procedure for safe consolidation of large backlogs.
- * Prevents damage through:
- * - Assessment and recovery mode detection
- * - Prioritization (recent + high importance first)
- * - Rate limiting with delays between API calls
- * - Budget tracking and cost caps
+ * Safety guardrails for memory consolidation runs:
  * - Checkpointing for resume capability
- * - Validation with soft rollback triggers
+ * - Rate limiting with delays between API calls
+ * - Rollback triggers (error rate, empty digests)
+ * - Cost tracking using Sonnet 4.6 pricing
  */
 
 import { randomUUID } from "crypto";
-import { EngramDatabase, Memory, Episode, ConsolidationCheckpoint } from "../storage/database.js";
+import { EngramDatabase, Memory, ConsolidationCheckpoint } from "../storage/database.js";
 
-// Token pricing (Opus 4.6 with extended thinking)
-const PRICING = {
-  opus: {
-    input: 15 / 1_000_000,      // $15 per 1M input tokens
-    output: 75 / 1_000_000,     // $75 per 1M output tokens
-    thinking: 15 / 1_000_000,   // $15 per 1M thinking tokens (same as input)
-  },
-  sonnet: {
-    input: 3.00 / 1_000_000,    // $3.00 per 1M input tokens
-    output: 15.00 / 1_000_000,  // $15.00 per 1M output tokens
-  },
+// Sonnet 4.6 pricing (the only model used for consolidation)
+const SONNET_PRICING = {
+  input: 3.00 / 1_000_000,    // $3.00 per 1M input tokens
+  output: 15.00 / 1_000_000,  // $15.00 per 1M output tokens
 };
 
-// Estimated tokens per operation (conservative estimates)
-const TOKEN_ESTIMATES = {
-  episodeBatch: {
-    input: 2000,    // Conversation text + system prompt
-    output: 1000,   // Extracted memories JSON
-  },
-  memoryBatch: {
-    input: 3000,     // Memories + system prompt
-    output: 2000,    // Digest + contradictions
-    thinking: 10000, // Extended thinking budget
-  },
-  entityProfile: {
-    input: 4000,
-    output: 3000,
-    thinking: 16000,
-  },
+// Estimated tokens per memory batch (conservative)
+const BATCH_TOKEN_ESTIMATE = {
+  input: 3000,
+  output: 2000,
 };
 
 export interface BacklogAssessment {
   unconsolidatedMemories: number;
-  unconsolidatedEpisodes: number;
   isRecoveryMode: boolean;
   estimatedBatches: number;
   estimatedCost: number;
-  dailyBudget: number;
-  dailySpent: number;
-  budgetRemaining: number;
-  canProceed: boolean;
   recommendedBatches: number;
   phases: PhasePlan[];
 }
 
 export interface PhasePlan {
-  phase: "episodes" | "memories" | "decay" | "cleanup";
+  phase: "memories" | "decay" | "cleanup";
   itemCount: number;
   batchCount: number;
   estimatedCost: number;
@@ -73,7 +46,6 @@ export interface ConsolidationProgress {
   batchesCompleted: number;
   batchesTotal: number;
   memoriesProcessed: number;
-  episodesProcessed: number;
   digestsCreated: number;
   contradictionsFound: number;
   tokensUsed: number;
@@ -84,7 +56,7 @@ export interface ConsolidationProgress {
 }
 
 export interface RollbackTrigger {
-  type: "error_rate" | "empty_digests" | "contradiction_rate" | "budget_exceeded";
+  type: "error_rate" | "empty_digests" | "contradiction_rate";
   threshold: number;
   current: number;
   triggered: boolean;
@@ -110,49 +82,26 @@ export class ConsolidationPlan {
    */
   assessBacklog(): BacklogAssessment {
     const unconsolidatedMem = this.db.getUnconsolidatedMemories(undefined, 10000);
-    const unconsolidatedEp = this.db.getUnconsolidatedEpisodes(10000);
 
     const recoveryThreshold = this.db.getConfigNumber("recovery_mode_threshold", 100);
-    const isRecoveryMode = unconsolidatedMem.length > recoveryThreshold ||
-                          unconsolidatedEp.length > recoveryThreshold;
-
-    const dailyBudget = this.db.getConfigNumber("daily_budget_usd", 5.0);
-    const dailySpent = this.db.getDailySpending();
-    const budgetRemaining = Math.max(0, dailyBudget - dailySpent);
+    const isRecoveryMode = unconsolidatedMem.length > recoveryThreshold;
 
     const maxBatchesPerRun = this.db.getConfigNumber("max_batches_per_run", 5);
-
-    // Calculate phase plans
-    const episodeBatches = Math.ceil(unconsolidatedEp.length / 20);
     const memoryBatches = Math.ceil(unconsolidatedMem.length / 15);
-    const totalBatches = episodeBatches + memoryBatches;
 
     const phases: PhasePlan[] = [];
     const delayMs = this.db.getConfigNumber("delay_between_calls_ms", 2000);
 
-    // Episode phase (Sonnet 4.6)
-    if (unconsolidatedEp.length >= 4) {
-      const batchCount = Math.min(episodeBatches, maxBatchesPerRun);
-      const cost = batchCount * this.estimateEpisodeBatchCost();
-      phases.push({
-        phase: "episodes",
-        itemCount: Math.min(unconsolidatedEp.length, batchCount * 20),
-        batchCount,
-        estimatedCost: cost,
-        estimatedTimeMs: batchCount * (2000 + delayMs), // ~2s per Sonnet call + delay
-      });
-    }
-
-    // Memory phase (Opus with thinking - expensive)
+    // Memory consolidation phase (Sonnet 4.6)
     if (unconsolidatedMem.length >= 5) {
       const batchCount = Math.min(memoryBatches, maxBatchesPerRun);
-      const cost = batchCount * this.estimateMemoryBatchCost();
+      const cost = batchCount * this.estimateBatchCost();
       phases.push({
         phase: "memories",
         itemCount: Math.min(unconsolidatedMem.length, batchCount * 15),
         batchCount,
         estimatedCost: cost,
-        estimatedTimeMs: batchCount * (15000 + delayMs), // ~15s per Opus call + delay
+        estimatedTimeMs: batchCount * (2000 + delayMs),
       });
     }
 
@@ -161,7 +110,6 @@ export class ConsolidationPlan {
     phases.push({ phase: "cleanup", itemCount: 0, batchCount: 0, estimatedCost: 0, estimatedTimeMs: 100 });
 
     const estimatedCost = phases.reduce((sum, p) => sum + p.estimatedCost, 0);
-    const canProceed = estimatedCost <= budgetRemaining;
 
     // In recovery mode, be more conservative
     const recommendedBatches = isRecoveryMode
@@ -170,14 +118,9 @@ export class ConsolidationPlan {
 
     return {
       unconsolidatedMemories: unconsolidatedMem.length,
-      unconsolidatedEpisodes: unconsolidatedEp.length,
       isRecoveryMode,
-      estimatedBatches: totalBatches,
+      estimatedBatches: memoryBatches,
       estimatedCost,
-      dailyBudget,
-      dailySpent,
-      budgetRemaining,
-      canProceed,
       recommendedBatches,
       phases,
     };
@@ -192,11 +135,9 @@ export class ConsolidationPlan {
 
     // Score each memory
     const now = Date.now();
-    const dayMs = 24 * 60 * 60 * 1000;
 
     const scored = allMemories.map(m => {
-      const ageHours = (now - m.timestamp.getTime()) / (60 * 60 * 1000);
-      const ageDays = ageHours / 24;
+      const ageDays = (now - m.timestamp.getTime()) / (24 * 60 * 60 * 1000);
 
       // Recency score: 1.0 for today, decays over 7 days
       const recencyScore = Math.max(0, 1 - (ageDays / 7));
@@ -226,18 +167,6 @@ export class ConsolidationPlan {
   }
 
   /**
-   * Get prioritized episodes for consolidation
-   */
-  getPrioritizedEpisodes(limit: number): Episode[] {
-    const episodes = this.db.getUnconsolidatedEpisodes(limit);
-
-    // Sort by timestamp (oldest first for episodes - process in order)
-    episodes.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-
-    return episodes;
-  }
-
-  /**
    * Create checkpoint for this run
    */
   createCheckpoint(phase: ConsolidationCheckpoint["phase"], batchesTotal: number): ConsolidationCheckpoint {
@@ -252,7 +181,6 @@ export class ConsolidationPlan {
     batchesCompleted: number;
     batchesTotal: number;
     memoriesProcessed: number;
-    episodesProcessed: number;
     digestsCreated: number;
     contradictionsFound: number;
     tokensUsed: number;
@@ -263,7 +191,6 @@ export class ConsolidationPlan {
       batches_completed: updates.batchesCompleted,
       batches_total: updates.batchesTotal,
       memories_processed: updates.memoriesProcessed,
-      episodes_processed: updates.episodesProcessed,
       digests_created: updates.digestsCreated,
       contradictions_found: updates.contradictionsFound,
       tokens_used: updates.tokensUsed,
@@ -293,11 +220,10 @@ export class ConsolidationPlan {
 
     return {
       runId: this.runId,
-      phase: checkpoint?.phase || "episodes",
+      phase: checkpoint?.phase || "memories",
       batchesCompleted: checkpoint?.batches_completed || 0,
       batchesTotal: checkpoint?.batches_total || 0,
       memoriesProcessed: checkpoint?.memories_processed || 0,
-      episodesProcessed: checkpoint?.episodes_processed || 0,
       digestsCreated: checkpoint?.digests_created || 0,
       contradictionsFound: checkpoint?.contradictions_found || 0,
       tokensUsed: checkpoint?.tokens_used || 0,
@@ -325,7 +251,7 @@ export class ConsolidationPlan {
   /**
    * Record an API call result for tracking
    */
-  recordApiCall(success: boolean, tokensUsed?: number): void {
+  recordApiCall(success: boolean): void {
     this.apiCalls++;
     if (!success) {
       this.apiErrors++;
@@ -381,17 +307,6 @@ export class ConsolidationPlan {
       });
     }
 
-    // Budget exceeded
-    const dailyBudget = this.db.getConfigNumber("daily_budget_usd", 5.0);
-    const dailySpent = this.db.getDailySpending();
-    triggers.push({
-      type: "budget_exceeded",
-      threshold: dailyBudget,
-      current: dailySpent,
-      triggered: dailySpent > dailyBudget,
-      message: `Daily spending $${dailySpent.toFixed(2)} exceeds budget $${dailyBudget.toFixed(2)}`,
-    });
-
     return triggers;
   }
 
@@ -404,35 +319,18 @@ export class ConsolidationPlan {
   }
 
   /**
-   * Estimate cost for an episode batch (Sonnet 4.6)
+   * Estimate cost for a single memory batch (Sonnet 4.6)
    */
-  private estimateEpisodeBatchCost(): number {
-    const { input, output } = TOKEN_ESTIMATES.episodeBatch;
-    return (input * PRICING.sonnet.input) + (output * PRICING.sonnet.output);
+  private estimateBatchCost(): number {
+    const { input, output } = BATCH_TOKEN_ESTIMATE;
+    return (input * SONNET_PRICING.input) + (output * SONNET_PRICING.output);
   }
 
   /**
-   * Estimate cost for a memory batch (Opus with thinking)
+   * Calculate actual cost from token usage (Sonnet 4.6)
    */
-  private estimateMemoryBatchCost(): number {
-    const { input, output, thinking } = TOKEN_ESTIMATES.memoryBatch;
-    return (input * PRICING.opus.input) +
-           (output * PRICING.opus.output) +
-           (thinking * PRICING.opus.thinking);
-  }
-
-  /**
-   * Calculate actual cost from token usage
-   */
-  calculateCost(model: "opus" | "sonnet", inputTokens: number, outputTokens: number, thinkingTokens?: number): number {
-    const pricing = PRICING[model];
-    let cost = (inputTokens * pricing.input) + (outputTokens * pricing.output);
-
-    if (model === "opus" && thinkingTokens) {
-      cost += thinkingTokens * PRICING.opus.thinking;
-    }
-
-    return cost;
+  calculateCost(inputTokens: number, outputTokens: number): number {
+    return (inputTokens * SONNET_PRICING.input) + (outputTokens * SONNET_PRICING.output);
   }
 
   /**
