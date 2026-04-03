@@ -180,13 +180,13 @@ const server = new Server(
   }
 );
 
-// Tool definitions with MCP 2025-06-18 annotations
-// Descriptions are carefully written to guide Claude on when to use each tool
+// Tool definitions with MCP 2025-11-25 annotations
+// Descriptions written for AI agents: positive instructions, clear workflow
 const TOOLS = [
   {
     name: "remember",
     description:
-      "Store NEW information the user shares. Extract entities (people, organizations, places) and relationships. Do NOT use for corrections - use edit_memory instead. Do NOT use before checking if info already exists - use recall first.",
+      "Store new information the user shares. Always call recall first to check for duplicates — if similar info exists, use edit_memory to update it instead. Extract entities (people, organizations, places) and relationships from the content. Workflow: recall → remember (if new) or edit_memory (if updating).",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -251,7 +251,7 @@ const TOOLS = [
   {
     name: "recall",
     description:
-      "Search stored memories. Use FIRST before answering questions about the user, their preferences, history, or anything previously discussed. Also use before remember to check if information already exists.",
+      "Search stored memories. Call this at the START of every conversation and before answering any question about the user, their preferences, history, people they know, or anything previously discussed. Also call before remember to avoid storing duplicates. After using recalled memories to answer, call memory_feedback with which memories helped.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -301,7 +301,7 @@ const TOOLS = [
   },
   {
     name: "forget",
-    description: "Delete a memory by its ID. Use when user explicitly asks to remove or forget specific stored information. Get the memory ID from recall results first.",
+    description: "Soft-delete a memory by its ID. Use only when the user explicitly asks to remove or forget something. Get the memory ID from recall results first.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -322,7 +322,7 @@ const TOOLS = [
   },
   {
     name: "edit_memory",
-    description: "Correct or update an existing memory. Use instead of forget+remember when fixing mistakes, updating outdated info, or adjusting importance. Preserves the memory's history and relationships.",
+    description: "Update an existing memory's content or importance. Use this when information has changed or was stored incorrectly — it preserves the memory's history, access count, and entity relationships. Preferred over forget+remember for corrections.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -374,7 +374,7 @@ const TOOLS = [
   },
   {
     name: "consolidate",
-    description: "Run memory consolidation to compress episodes into memories and memories into digests. Like sleep for the memory system. Requires ANTHROPIC_API_KEY. Use periodically or when explicitly requested.",
+    description: "Compress old memories into concise digests and detect contradictions — like sleep for the memory system. Requires ANTHROPIC_API_KEY. Run when the system hints consolidation is needed (shown in recall results) or when the user requests it.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -396,7 +396,7 @@ const TOOLS = [
   },
   {
     name: "memory_feedback",
-    description: "Signal which memories from a recall were actually useful. Call AFTER using memories to answer user's question. This enables the memory system to learn which memories help together (Hebbian learning). Optional but improves memory quality over time.",
+    description: "Report which recalled memories were useful for answering the user's question. Call this EVERY TIME after using recall results — it teaches the memory system which memories work well together (Hebbian learning), making future recalls more accurate. Pass the recall_id and the IDs of memories you actually used.",
     inputSchema: {
       type: "object" as const,
       properties: {
