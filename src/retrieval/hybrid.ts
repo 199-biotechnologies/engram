@@ -1,6 +1,6 @@
 /**
  * Hybrid Search with Reciprocal Rank Fusion (RRF)
- * Combines BM25 (keyword) and Jina v5 (semantic) search
+ * Combines BM25 (keyword) and semantic embedding search
  * Enhanced with temporal decay and salience scoring
  */
 
@@ -113,8 +113,8 @@ export class HybridSearch {
   /**
    * Search using all available methods and fuse results
    *
-   * Strategy: BM25 gets candidates fast, Jina reranks for quality
-   * This is both FASTER (fewer Jina computations) and BETTER (combines keyword + semantic)
+   * Strategy: BM25 gets candidates fast, semantic embedder reranks for quality
+   * This is both FASTER (fewer semantic embedder computations) and BETTER (combines keyword + semantic)
    */
   async search(
     query: string,
@@ -128,7 +128,7 @@ export class HybridSearch {
       semanticWeight?: number;
       graphWeight?: number;
       connectionWeight?: number;     // Weight for connected memories in RRF
-      useReranking?: boolean;        // Use Jina to rerank BM25 results
+      useReranking?: boolean;        // Use semantic embedder to rerank BM25 results
     } = {}
   ): Promise<HybridSearchResponse> {
     const {
@@ -163,7 +163,7 @@ export class HybridSearch {
     // For semantic: either rerank BM25 results (faster+better) or search full index
     let semanticResults: Array<{ id: string; score: number }>;
     if (useReranking && bm25Results.length > 0) {
-      // Rerank BM25 candidates with Jina - faster AND better quality
+      // Rerank BM25 candidates with semantic embedder - faster AND better quality
       const docs = bm25Results.map(r => ({ id: r.id, content: this.db.getMemory(r.id)?.content || '' }));
       const reranked = await this.retriever.rerank(query, docs, candidateLimit);
       semanticResults = reranked.map(r => ({ id: r.id, score: r.score }));
@@ -447,7 +447,7 @@ export class HybridSearch {
   }
 
   /**
-   * Semantic search via Jina v5
+   * Semantic search via Transformers.js
    */
   private async searchSemantic(query: string, limit: number): Promise<Array<{ id: string; score: number }>> {
     try {
