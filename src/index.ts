@@ -107,13 +107,14 @@ function cleanup(): void {
 process.on("SIGTERM", () => {
   console.error("[Engram] Received SIGTERM, shutting down...");
   cleanup();
-  process.exit(0);
+  // Small delay to let native modules (sqlite-vec, ONNX) release resources
+  setTimeout(() => process.exit(0), 100);
 });
 
 process.on("SIGINT", () => {
   console.error("[Engram] Received SIGINT, shutting down...");
   cleanup();
-  process.exit(0);
+  setTimeout(() => process.exit(0), 100);
 });
 
 process.on("exit", cleanup);
@@ -124,13 +125,13 @@ if (getTransportMode() === "stdio") {
   process.stdin.on("end", () => {
     console.error("[Engram] stdin closed, parent process likely died. Shutting down...");
     cleanup();
-    process.exit(0);
+    setTimeout(() => process.exit(0), 100);
   });
 
   process.stdin.on("close", () => {
     console.error("[Engram] stdin closed, shutting down...");
     cleanup();
-    process.exit(0);
+    setTimeout(() => process.exit(0), 100);
   });
 }
 
