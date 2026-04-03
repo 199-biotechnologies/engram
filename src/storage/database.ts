@@ -4,6 +4,7 @@
  */
 
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 import { randomUUID } from "crypto";
 import path from "path";
 import fs from "fs";
@@ -162,6 +163,9 @@ export class EngramDatabase {
     }
 
     this.db = new Database(dbPath);
+
+    // Load sqlite-vec extension for vector search
+    sqliteVec.load(this.db);
 
     // Performance optimizations - all improve speed with no quality trade-off
     this.db.pragma("journal_mode = WAL");         // Better concurrent access
@@ -440,6 +444,14 @@ export class EngramDatabase {
         ('recovery_mode_threshold', '100'),
         ('error_rate_threshold', '0.3'),
         ('empty_digest_threshold', '0.2');
+    `);
+
+    // Vector search table (sqlite-vec)
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
+        memory_id TEXT,
+        embedding float[384]
+      );
     `);
   }
 
@@ -1708,6 +1720,120 @@ export class EngramDatabase {
     };
 
     return row;
+  }
+
+  // ============ Vector Operations (sqlite-vec) ============
+
+  insertVector(memoryId: string, embedding: Float32Array): void {
+    this.db.prepare(
+      'INSERT INTO vec_memories(memory_id, embedding) VALUES (?, ?)'
+    ).run(memoryId, Buffer.from(embedding.buffer));
+  }
+
+  searchVectors(queryEmbedding: Float32Array, k: number): Array<{memoryId: string, distance: number}> {
+    const results = this.db.prepare(
+      'SELECT memory_id, distance FROM vec_memories WHERE embedding MATCH ? ORDER BY distance LIMIT ?'
+    ).all(Buffer.from(queryEmbedding.buffer), k) as Array<{memory_id: string, distance: number}>;
+    return results.map(r => ({ memoryId: r.memory_id, distance: r.distance }));
+  }
+
+  deleteVector(memoryId: string): void {
+    // sqlite-vec requires rowid for deletion, so we need to find it first
+    const row = this.db.prepare(
+      'SELECT rowid FROM vec_memories WHERE memory_id = ?'
+    ).get(memoryId) as {rowid: number} | undefined;
+    if (row) {
+      this.db.prepare('DELETE FROM vec_memories WHERE rowid = ?').run(row.rowid);
+    }
+  }
+
+  findSimilar(embedding: Float32Array, threshold: number): Array<{memoryId: string, distance: number}> {
+    // Search for vectors within threshold distance (lower = more similar)
+    // cosine distance: 0 = identical, 2 = opposite
+    const results = this.searchVectors(embedding, 10);
+    return results.filter(r => r.distance < (1 - threshold) * 2);
+  }
+
+  // ============ Export / Import ============
+
+  exportAll(): {
+    memories: Memory[];
+    entities: Entity[];
+    relations: Relation[];
+    observations: Observation[];
+    digests: Digest[];
+  } {
+    return {
+      memories: this.getAllMemories(100000, true),
+      entities: this.listEntities(undefined, 100000),
+      relations: (this.db.prepare('SELECT * FROM relations').all() as Record<string, unknown>[])
+        .map(row => this.rowToRelation(row)),
+      observations: (this.db.prepare('SELECT * FROM observations').all() as Record<string, unknown>[])
+        .map(row => this.rowToObservation(row)),
+      digests: this.getDigests(undefined, 100000),
+    };
+  }
+
+  importAll(data: {
+    memories?: Record<string, unknown>[];
+    entities?: Record<string, unknown>[];
+    relations?: Record<string, unknown>[];
+    observations?: Record<string, unknown>[];
+    digests?: Record<string, unknown>[];
+  }): { imported: number } {
+    let count = 0;
+    const transaction = this.db.transaction(() => {
+      for (const m of data.memories || []) {
+        try {
+          const ts = m.timestamp instanceof Date
+            ? (m.timestamp as Date).toISOString()
+            : m.timestamp as string;
+          this.db.prepare(
+            `INSERT OR IGNORE INTO memories (id, content, source, timestamp, importance, emotional_weight, event_time) VALUES (?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            m.id, m.content, m.source || 'conversation', ts,
+            m.importance ?? 0.5, m.emotional_weight ?? 0.5,
+            m.event_time instanceof Date ? (m.event_time as Date).toISOString() : (m.event_time || null)
+          );
+          count++;
+        } catch { /* skip duplicates */ }
+      }
+      for (const e of data.entities || []) {
+        try {
+          const createdAt = e.created_at instanceof Date
+            ? (e.created_at as Date).toISOString()
+            : e.created_at as string;
+          this.db.prepare(
+            `INSERT OR IGNORE INTO entities (id, name, type, created_at) VALUES (?, ?, ?, ?)`
+          ).run(e.id, e.name, e.type, createdAt);
+          count++;
+        } catch { /* skip duplicates */ }
+      }
+      for (const r of data.relations || []) {
+        try {
+          const createdAt = r.created_at instanceof Date
+            ? (r.created_at as Date).toISOString()
+            : r.created_at as string;
+          this.db.prepare(
+            `INSERT OR IGNORE INTO relations (id, from_entity, to_entity, type, created_at) VALUES (?, ?, ?, ?, ?)`
+          ).run(r.id, r.from_entity, r.to_entity, r.type, createdAt);
+          count++;
+        } catch { /* skip duplicates */ }
+      }
+      for (const o of data.observations || []) {
+        try {
+          const validFrom = o.valid_from instanceof Date
+            ? (o.valid_from as Date).toISOString()
+            : o.valid_from as string;
+          this.db.prepare(
+            `INSERT OR IGNORE INTO observations (id, entity_id, content, source_memory_id, confidence, valid_from) VALUES (?, ?, ?, ?, ?, ?)`
+          ).run(o.id, o.entity_id, o.content, o.source_memory_id, o.confidence ?? 1.0, validFrom);
+          count++;
+        } catch { /* skip duplicates */ }
+      }
+    });
+    transaction();
+    return { imported: count };
   }
 
   // ============ Utilities ============

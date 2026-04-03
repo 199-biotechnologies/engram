@@ -1,6 +1,6 @@
 {
   "name": "@199-bio/engram",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Give Claude a perfect memory. Local-first MCP server with hybrid search.",
   "type": "module",
   "main": "dist/index.js",
@@ -27,7 +27,6 @@
     "memory",
     "ai",
     "claude",
-    "jina",
     "rag",
     "knowledge-graph",
     "semantic-search",
@@ -47,10 +46,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
-    "@modelcontextprotocol/sdk": "^1.25.0",
+    "@huggingface/transformers": "^3.4.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^11.10.0",
     "chrono-node": "^2.7.0",
     "uuid": "^10.0.0",
+    "sqlite-vec": "^0.1.6",
     "zod": "^3.24.0"
   },
   "devDependencies": {

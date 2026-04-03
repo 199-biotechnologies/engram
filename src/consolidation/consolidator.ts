@@ -1,14 +1,15 @@
 /**
  * Memory Consolidator
  *
- * Uses Opus 4.6 with extended thinking to consolidate memories into digests
- * and detect contradictions. Inspired by how the brain consolidates
- * short-term memories into long-term storage during sleep.
+ * Uses Sonnet 4.6 for batch memory consolidation (cost-efficient summarization)
+ * and Opus 4.6 with extended thinking for entity profiles (deeper reasoning).
+ * Inspired by how the brain consolidates short-term memories into long-term
+ * storage during sleep.
  *
  * Levels:
- * - L1: Session digests (consolidate recent memories)
+ * - L1: Session digests (consolidate recent memories) — Sonnet 4.6
  * - L2: Topic clusters (group related digests)
- * - L3: Entity profiles (comprehensive view of each entity)
+ * - L3: Entity profiles (comprehensive view of each entity) — Opus 4.6
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -241,7 +242,7 @@ export class Consolidator {
   }
 
   /**
-   * Consolidate a batch of memories using Opus 4.6 with extended thinking
+   * Consolidate a batch of memories using Sonnet 4.6 (cost-efficient summarization)
    */
   private async consolidateBatch(
     memories: Memory[]
@@ -273,13 +274,8 @@ Create a detailed digest that preserves all important information. Respond with 
 
     try {
       const response = await client.messages.create({
-        model: "claude-opus-4-6-20250514",
-        max_tokens: 16000,
-        temperature: 1, // Required for extended thinking
-        thinking: {
-          type: "enabled",
-          budget_tokens: 10000, // High budget for thorough analysis
-        },
+        model: "claude-sonnet-4-6-20250514",
+        max_tokens: 8000,
         messages: [
           {
             role: "user",
@@ -869,10 +865,10 @@ Respond with JSON only.`;
             }
           }
 
-          // Estimate tokens (Opus with thinking)
-          const batchTokens = 15000; // Conservative estimate
+          // Estimate tokens (Sonnet without thinking)
+          const batchTokens = 5000; // Conservative estimate
           totalTokens += batchTokens;
-          totalCost += plan.calculateCost("opus", 3000, 2000, 10000);
+          totalCost += plan.calculateCost("sonnet", 3000, 2000);
 
           plan.updateProgress({
             batchesCompleted: (i / batchSize) + 1,

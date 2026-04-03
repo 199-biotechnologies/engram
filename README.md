@@ -142,7 +142,7 @@ Engram runs three search methods in parallel and fuses the results:
 
 **BM25** finds exact keyword matches for names and phrases via SQLite FTS5.
 
-**Semantic search** finds conceptually related content using Jina v5 embeddings with MLX Metal acceleration (~9ms/query on Apple Silicon).
+**Semantic search** finds conceptually related content using Transformers.js embeddings with all-MiniLM-L6-v2 (~15ms/query, runs natively in Node.js).
 
 **Knowledge graph** expands results through entity relationships -- ask about Sarah and her company, projects, and preferences all surface together.
 
@@ -216,8 +216,6 @@ Environment variables:
 |----------|---------|---------|
 | `ENGRAM_DB_PATH` | Where to store data | `~/.engram/` |
 | `ANTHROPIC_API_KEY` | Enable memory consolidation | None (optional) |
-| `COLBERT_MODEL` | ColBERT reranking model | `colbert-ir/colbertv2.0` |
-| `EMBEDDING_MODEL` | Embedding model for semantic search | `Qwen/Qwen3-Embedding-0.6B` |
 | `MAX_MEMORY_CACHE` | In-memory cache size | `1000` |
 | `RETRIEVAL_TOP_K` | Initial retrieval pool size | `50` |
 | `RERANK_TOP_K` | Final results after reranking | `10` |
@@ -236,13 +234,7 @@ npm run build
 npm install -g .
 ```
 
-For semantic search with local embeddings:
-
-```bash
-pip install jina-grep
-```
-
-This uses Jina v5 embeddings with MLX Metal acceleration (~9ms/query). If unavailable, Engram falls back to keyword-only search.
+Semantic search uses Transformers.js with all-MiniLM-L6-v2 embeddings. No Python or external dependencies required.
 
 ---
 

@@ -1,2 +1,2 @@
-export * from "./jina.js";
+export * from "./embedder.js";
 export * from "./hybrid.js";

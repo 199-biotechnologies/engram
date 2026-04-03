@@ -12,16 +12,20 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { createRequire } from "module";
 import path from "path";
 import os from "os";
 import fs from "fs";
+
+const require = createRequire(import.meta.url);
+const pkg = require("../package.json");
 
 import { getTransportMode, getHttpPort } from "./transport/index.js";
 import { startHttpServer } from "./transport/http.js";
 
 import { EngramDatabase } from "./storage/database.js";
 import { KnowledgeGraph } from "./graph/knowledge-graph.js";
-import { createRetriever, JinaRetriever, SimpleRetriever } from "./retrieval/jina.js";
+import { createEmbedder, TransformersEmbedder } from "./retrieval/embedder.js";
 import { HybridSearch } from "./retrieval/hybrid.js";
 import { EngramWebServer, getRunningServerUrl } from "./web/server.js";
 import { Consolidator } from "./consolidation/consolidator.js";
@@ -138,7 +142,7 @@ if (getTransportMode() === "stdio") {
 let db: EngramDatabase;
 let graph: KnowledgeGraph;
 let search: HybridSearch;
-let retriever: JinaRetriever | SimpleRetriever;
+let retriever: TransformersEmbedder;
 let consolidator: Consolidator;
 let webServer: EngramWebServer | null = null;
 
@@ -148,7 +152,7 @@ async function initialize(): Promise<void> {
   db = new EngramDatabase(DB_FILE);
   graph = new KnowledgeGraph(db);
 
-  retriever = await createRetriever(DB_PATH);
+  retriever = await createEmbedder(db);
   search = new HybridSearch(db, graph, retriever);
   consolidator = new Consolidator(db, graph, search);
 
@@ -164,15 +168,6 @@ async function initialize(): Promise<void> {
     console.error(`[Engram] Consolidation enabled (ANTHROPIC_API_KEY found)`);
   }
 
-  // Start web server automatically (unless another instance is already running)
-  const existingUrl = getRunningServerUrl();
-  if (!existingUrl) {
-    webServer = new EngramWebServer({ db, graph, search });
-    const url = await webServer.start();
-    console.error(`[Engram] Web interface: ${url}`);
-  } else {
-    console.error(`[Engram] Web interface already running: ${existingUrl}`);
-  }
 }
 
 // ============ MCP Server ============
@@ -180,7 +175,7 @@ async function initialize(): Promise<void> {
 const server = new Server(
   {
     name: "engram",
-    version: "0.8.0",
+    version: pkg.version,
   },
   {
     capabilities: {

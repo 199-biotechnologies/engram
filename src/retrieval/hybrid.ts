@@ -6,7 +6,7 @@
 
 import { EngramDatabase, Memory, Digest } from "../storage/database.js";
 import { KnowledgeGraph } from "../graph/knowledge-graph.js";
-import { JinaRetriever, SimpleRetriever, SearchResult, Document } from "./jina.js";
+import { TransformersEmbedder, SearchResult, Document } from "./embedder.js";
 
 export interface HybridSearchResult {
   memory: Memory;
@@ -97,7 +97,7 @@ export class HybridSearch {
   constructor(
     private db: EngramDatabase,
     private graph: KnowledgeGraph,
-    private retriever: JinaRetriever | SimpleRetriever
+    private retriever: TransformersEmbedder
   ) {
     // Generate a session ID for this search instance
     this.sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
