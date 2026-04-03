@@ -453,6 +453,14 @@ export class EngramDatabase {
         embedding float[384]
       );
     `);
+
+    // Metadata table for tracking embedding model version etc.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS engram_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
   }
 
   /**
@@ -1762,6 +1770,19 @@ export class EngramDatabase {
   getIndexedMemoryIds(): Set<string> {
     const rows = this.db.prepare('SELECT memory_id FROM vec_memories').all() as Array<{memory_id: string}>;
     return new Set(rows.map(r => r.memory_id));
+  }
+
+  clearAllVectors(): void {
+    this.db.exec('DELETE FROM vec_memories');
+  }
+
+  getMetadata(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM engram_metadata WHERE key = ?').get(key) as {value: string} | undefined;
+    return row?.value ?? null;
+  }
+
+  setMetadata(key: string, value: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO engram_metadata (key, value) VALUES (?, ?)').run(key, value);
   }
 
   // ============ Export / Import ============

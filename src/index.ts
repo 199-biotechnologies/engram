@@ -153,13 +153,23 @@ async function initialize(): Promise<void> {
     console.error(`[Engram] Consolidation enabled (ANTHROPIC_API_KEY found)`);
   }
 
+  // Check if embedding model changed — if so, re-index everything
+  const CURRENT_MODEL = 'mdbr-leaf-ir';
+  const storedModel = db.getMetadata('embedding_model');
+  const modelChanged = storedModel !== null && storedModel !== CURRENT_MODEL;
+
+  if (modelChanged) {
+    console.error(`[Engram] Embedding model changed (${storedModel} → ${CURRENT_MODEL}), clearing vector index...`);
+    db.clearAllVectors();
+  }
+  db.setMetadata('embedding_model', CURRENT_MODEL);
+
   // Index unindexed memories in the background (don't block MCP startup)
-  // Vectors are persisted in sqlite-vec, so only new memories need indexing
   if (stats.memories > 0) {
     const vectorCount = db.getVectorCount();
     const unindexed = stats.memories - vectorCount;
     if (unindexed > 0) {
-      console.error(`[Engram] ${vectorCount} memories already indexed, ${unindexed} need indexing...`);
+      console.error(`[Engram] ${vectorCount}/${stats.memories} memories indexed, ${unindexed} need indexing...`);
       // Run indexing in background — server is already responding to MCP calls
       (async () => {
         try {
@@ -175,7 +185,7 @@ async function initialize(): Promise<void> {
         }
       })();
     } else {
-      console.error(`[Engram] All ${vectorCount} memories already indexed`);
+      console.error(`[Engram] All ${vectorCount} memories indexed (model: ${CURRENT_MODEL})`);
     }
   }
 }

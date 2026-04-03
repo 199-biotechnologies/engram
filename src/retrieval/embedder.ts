@@ -1,6 +1,6 @@
 /**
  * Pure TypeScript embedder using Transformers.js
- * Replaces the Python Jina v5 bridge with all-MiniLM-L6-v2 (22M params, 384-dim)
+ * Uses MongoDB LEAF mdbr-leaf-ir (23M params, 384-dim, #1 BEIR for <100M models)
  * No Python dependency required.
  */
 
@@ -26,7 +26,7 @@ export interface VectorStore {
   findSimilar(embedding: Float32Array, threshold: number): Array<{memoryId: string, distance: number}>;
 }
 
-const MODEL_NAME = 'Xenova/all-MiniLM-L6-v2';
+const MODEL_NAME = 'onnx-community/mdbr-leaf-ir-ONNX';
 const EMBEDDING_DIM = 384;
 
 export class TransformersEmbedder {
@@ -149,6 +149,6 @@ export class TransformersEmbedder {
  */
 export async function createEmbedder(db: VectorStore): Promise<TransformersEmbedder> {
   const embedder = new TransformersEmbedder(db);
-  console.error('[Engram] Using Transformers.js embedder (all-MiniLM-L6-v2)');
+  console.error('[Engram] Using Transformers.js embedder (mdbr-leaf-ir)');
   return embedder;
 }

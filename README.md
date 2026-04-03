@@ -142,7 +142,7 @@ Engram runs three search methods in parallel and fuses the results:
 
 **BM25** finds exact keyword matches for names and phrases via SQLite FTS5.
 
-**Semantic search** finds conceptually related content using Transformers.js embeddings with all-MiniLM-L6-v2 (~15ms/query, runs natively in Node.js).
+**Semantic search** finds conceptually related content using MongoDB LEAF embeddings via Transformers.js (#1 on BEIR for small models, ~1ms/query, runs natively in Node.js).
 
 **Knowledge graph** expands results through entity relationships -- ask about Sarah and her company, projects, and preferences all surface together.
 
@@ -234,7 +234,7 @@ npm run build
 npm install -g .
 ```
 
-Semantic search uses Transformers.js with all-MiniLM-L6-v2 embeddings. No Python or external dependencies required.
+Semantic search uses MongoDB LEAF (mdbr-leaf-ir) via Transformers.js — the #1 retrieval model on BEIR for models under 100M parameters. No Python or external dependencies required.
 
 ---
 
