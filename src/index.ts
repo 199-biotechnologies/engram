@@ -82,9 +82,13 @@ function writePidFile(): void {
 }
 
 /**
- * Clean up on exit
+ * Clean up on exit (guarded against double-run)
  */
+let cleanedUp = false;
 function cleanup(): void {
+  if (cleanedUp) return;
+  cleanedUp = true;
+
   try {
     if (fs.existsSync(PID_FILE)) {
       const storedPid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
@@ -103,36 +107,25 @@ function cleanup(): void {
   }
 }
 
+function gracefulExit(reason: string): void {
+  console.error(`[Engram] ${reason}`);
+  cleanup();
+  // Force immediate exit to avoid ONNX/native module destructor crashes
+  // The mutex error in libc++ happens during normal Node.js teardown;
+  // _exit bypasses destructors entirely
+  process.kill(process.pid, "SIGKILL");
+}
+
 // Register signal handlers early
-process.on("SIGTERM", () => {
-  console.error("[Engram] Received SIGTERM, shutting down...");
-  cleanup();
-  // Small delay to let native modules (sqlite-vec, ONNX) release resources
-  setTimeout(() => process.exit(0), 100);
-});
-
-process.on("SIGINT", () => {
-  console.error("[Engram] Received SIGINT, shutting down...");
-  cleanup();
-  setTimeout(() => process.exit(0), 100);
-});
-
+process.on("SIGTERM", () => gracefulExit("Received SIGTERM, shutting down..."));
+process.on("SIGINT", () => gracefulExit("Received SIGINT, shutting down..."));
 process.on("exit", cleanup);
 
 // Detect when parent process (Claude) dies by monitoring stdin
 // Only needed in stdio mode
 if (getTransportMode() === "stdio") {
-  process.stdin.on("end", () => {
-    console.error("[Engram] stdin closed, parent process likely died. Shutting down...");
-    cleanup();
-    setTimeout(() => process.exit(0), 100);
-  });
-
-  process.stdin.on("close", () => {
-    console.error("[Engram] stdin closed, shutting down...");
-    cleanup();
-    setTimeout(() => process.exit(0), 100);
-  });
+  process.stdin.on("end", () => gracefulExit("stdin closed, parent process likely died. Shutting down..."));
+  process.stdin.on("close", () => gracefulExit("stdin closed, shutting down..."));
 }
 
 // ============ Initialize Components ============
