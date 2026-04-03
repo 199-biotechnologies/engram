@@ -1754,6 +1754,16 @@ export class EngramDatabase {
     return results.filter(r => r.distance < (1 - threshold) * 2);
   }
 
+  getVectorCount(): number {
+    const row = this.db.prepare('SELECT count(*) as cnt FROM vec_memories').get() as {cnt: number};
+    return row.cnt;
+  }
+
+  getIndexedMemoryIds(): Set<string> {
+    const rows = this.db.prepare('SELECT memory_id FROM vec_memories').all() as Array<{memory_id: string}>;
+    return new Set(rows.map(r => r.memory_id));
+  }
+
   // ============ Export / Import ============
 
   exportAll(): {

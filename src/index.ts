@@ -147,16 +147,36 @@ async function initialize(): Promise<void> {
   search = new HybridSearch(db, graph, retriever);
   consolidator = new Consolidator(db, graph, search);
 
-  // Rebuild index with existing memories
   const stats = db.getStats();
-  if (stats.memories > 0) {
-    console.error(`[Engram] Indexing ${stats.memories} existing memories...`);
-    await search.rebuildIndex();
-  }
-
   console.error(`[Engram] Ready. Stats: ${JSON.stringify(stats)}`);
   if (consolidator.isConfigured()) {
     console.error(`[Engram] Consolidation enabled (ANTHROPIC_API_KEY found)`);
+  }
+
+  // Index unindexed memories in the background (don't block MCP startup)
+  // Vectors are persisted in sqlite-vec, so only new memories need indexing
+  if (stats.memories > 0) {
+    const vectorCount = db.getVectorCount();
+    const unindexed = stats.memories - vectorCount;
+    if (unindexed > 0) {
+      console.error(`[Engram] ${vectorCount} memories already indexed, ${unindexed} need indexing...`);
+      // Run indexing in background — server is already responding to MCP calls
+      (async () => {
+        try {
+          const indexedIds = db.getIndexedMemoryIds();
+          const memories = db.getAllMemories();
+          const toIndex = memories.filter(m => !indexedIds.has(m.id));
+          if (toIndex.length > 0) {
+            await search.indexBatch(toIndex);
+            console.error(`[Engram] Background indexing complete: ${toIndex.length} memories indexed`);
+          }
+        } catch (error) {
+          console.error(`[Engram] Background indexing error:`, error);
+        }
+      })();
+    } else {
+      console.error(`[Engram] All ${vectorCount} memories already indexed`);
+    }
   }
 }
 

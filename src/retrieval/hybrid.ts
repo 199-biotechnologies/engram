@@ -530,6 +530,27 @@ export class HybridSearch {
   }
 
   /**
+   * Index a batch of memories (for background indexing of unindexed memories)
+   */
+  async indexBatch(memories: Memory[]): Promise<{ count: number }> {
+    const BATCH_SIZE = 50;
+    let indexed = 0;
+
+    for (let i = 0; i < memories.length; i += BATCH_SIZE) {
+      const batch = memories.slice(i, i + BATCH_SIZE);
+      const documents: Document[] = batch.map(m => ({
+        id: m.id,
+        content: m.content,
+      }));
+      await this.retriever.add(documents);
+      indexed += batch.length;
+      console.error(`[Engram] Indexed ${indexed}/${memories.length} memories...`);
+    }
+
+    return { count: indexed };
+  }
+
+  /**
    * Remove a memory from the semantic index
    */
   async removeFromIndex(memoryId: string): Promise<void> {
