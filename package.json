@@ -20,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/paperfoot/engram.git"
+    "url": "git+https://github.com/199-biotechnologies/engram.git"
   },
   "keywords": [
     "mcp",
@@ -38,9 +38,9 @@
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/paperfoot/engram/issues"
+    "url": "https://github.com/199-biotechnologies/engram/issues"
   },
-  "homepage": "https://github.com/paperfoot/engram#readme",
+  "homepage": "https://github.com/199-biotechnologies/engram#readme",
   "engines": {
     "node": ">=18.0.0"
   },
