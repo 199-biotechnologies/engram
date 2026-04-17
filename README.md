@@ -5,8 +5,8 @@
 <h3 align="center">Give your AI a memory that actually works.</h3>
 
 <p align="center">
-  <a href="https://github.com/199-biotechnologies/engram/stargazers">
-    <img src="https://img.shields.io/github/stars/199-biotechnologies/engram?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow" alt="GitHub Stars" />
+  <a href="https://github.com/paperfoot/engram/stargazers">
+    <img src="https://img.shields.io/github/stars/paperfoot/engram?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow" alt="GitHub Stars" />
   </a>
   &nbsp;
   <a href="https://x.com/longevityboris">
@@ -18,8 +18,8 @@
   <a href="https://www.npmjs.com/package/@199-bio/engram">
     <img src="https://img.shields.io/npm/v/@199-bio/engram?style=for-the-badge&logo=npm&color=CB3837" alt="npm version" />
   </a>
-  <a href="https://github.com/199-biotechnologies/engram/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/199-biotechnologies/engram?style=for-the-badge" alt="MIT License" />
+  <a href="https://github.com/paperfoot/engram/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/paperfoot/engram?style=for-the-badge" alt="MIT License" />
   </a>
   <a href="https://www.typescriptlang.org/">
     <img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
@@ -227,7 +227,7 @@ Environment variables:
 ## Building from Source
 
 ```bash
-git clone https://github.com/199-biotechnologies/engram.git
+git clone https://github.com/paperfoot/engram.git
 cd engram
 npm install
 npm run build
@@ -267,8 +267,8 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 </p>
 
 <p align="center">
-  <a href="https://github.com/199-biotechnologies/engram/stargazers">
-    <img src="https://img.shields.io/github/stars/199-biotechnologies/engram?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow" alt="GitHub Stars" />
+  <a href="https://github.com/paperfoot/engram/stargazers">
+    <img src="https://img.shields.io/github/stars/paperfoot/engram?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow" alt="GitHub Stars" />
   </a>
   &nbsp;
   <a href="https://x.com/longevityboris">
