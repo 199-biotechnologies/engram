@@ -47,6 +47,8 @@ Every conversation your AI has disappears the moment it ends. Names, preferences
 
 ## Why This Exists
 
+[![SafeSkill 92/100](https://img.shields.io/badge/SafeSkill-92%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/199-biotechnologies-engram)
+
 You tell your AI something important. A name, an allergy, a deadline. Next conversation -- it's forgotten. You repeat yourself. You re-explain context. You carry the cognitive load that your AI should carry for you.
 
 Engram gives your AI a real memory system. Tell it once:
